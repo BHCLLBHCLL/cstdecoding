@@ -214,7 +214,7 @@ class CSTMainWindow(QMainWindow):
         b.setFixedHeight(82)
         b.setMinimumWidth(64 if big else 60)
         if slot:
-            b.clicked.connect(slot)
+            b.clicked.connect(lambda _checked=False, s=slot: s())
         return b
 
     def _make_ribbon_group(self, title, buttons, *, big_first=False):
@@ -319,7 +319,7 @@ class CSTMainWindow(QMainWindow):
         ]))
         # 3D_Modeling_General Material / NewMaterial / MaterialLibrary
         layout.addWidget(self._make_ribbon_group("Materials", [
-            ("New", "material", self._on_new_material),
+            ("New", "material", lambda: self._on_new_material()),
             ("Library", "material", self._nyi_slot("Material Library")),
         ]))
         # Discrete / Waveguide ports live under simulation but are modeled here
@@ -1071,7 +1071,7 @@ class CSTMainWindow(QMainWindow):
         self._mutate(caption, apply)
         self.message_win.info(caption)
 
-    def _on_new_material(self) -> None:
+    def _on_new_material(self, checked=False) -> None:
         data = material_dialog(self)
         if not data or not data.get("name"):
             return
