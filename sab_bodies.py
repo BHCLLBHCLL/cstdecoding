@@ -337,6 +337,12 @@ def _sample_edge(ents, base, edge) -> list:
             if ends is not None and len(pts) >= 2:
                 pts[0] = ends[0]
                 pts[-1] = ends[1]
+    elif curve["type"] in ("intcurve", "nubs", "spline", "exactcur"):
+        nubs_pts = _sample_nubs_follow(ents, curve)
+        if len(nubs_pts) >= 3:
+            pts = nubs_pts
+            if ends is not None:
+                pts = _clip_poly_to_ends(pts, ends[0], ends[1])
     if len(pts) >= 2:
         return pts
     if ends is not None and _dist(ends[0], ends[1]) > 1e-12:
@@ -346,6 +352,105 @@ def _sample_edge(ents, base, edge) -> list:
 
 def _dist(a, b) -> float:
     return float(np.linalg.norm(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)))
+
+
+def _nubs_world_polyline(nubs, min_span: float = 0.5) -> list:
+    """Extract world-scale xyz triples from a nubs record as a polyline.
+
+    ACIS nubs surfaces store a 2-D control net; those are rejected so an
+    edge sample stays a 1-D curve. Compact local-frame nubs (span < min_span)
+    fall through to vertex endpoints.
+    """
+    if nubs is None:
+        return []
+    flts = [float(v) for k, v in nubs.get("fields", []) if k == "f64"]
+    candidates = []
+    for off in range(3):
+        triples = []
+        i = off
+        while i + 2 < len(flts):
+            triples.append(np.array([flts[i], flts[i + 1], flts[i + 2]], dtype=float))
+            i += 3
+        if len(triples) < 3:
+            continue
+        arr = np.asarray(triples, dtype=float)
+        span = float((arr.max(0) - arr.min(0)).max())
+        if span < min_span:
+            continue
+        centered = arr - arr.mean(axis=0)
+        cov = centered.T @ centered
+        try:
+            ev = np.linalg.eigvalsh(cov)
+        except Exception:
+            continue
+        total = float(ev.sum())
+        score = float(ev[-1] / total) if total > 1e-12 else 0.0
+        if score < 0.82:
+            continue
+        # Phase-shifted xyz packing of the same floats is also 1-D but
+        # shorter; keep the packing with the largest world span.
+        candidates.append((span, len(triples), score, -off, triples))
+    if not candidates:
+        return []
+    candidates.sort(reverse=True)
+    best = candidates[0][4]
+    out = [best[0]]
+    for p in best[1:]:
+        if _dist(out[-1], p) > 1e-6:
+            out.append(p)
+    return out if len(out) >= 3 else []
+
+
+def _sample_nubs_follow(ents, start_ent) -> list:
+    """Walk intcurve / exactcur / spline headers to a following nubs curve."""
+    if start_ent is None:
+        return []
+    if start_ent.get("type") == "nubs":
+        return _nubs_world_polyline(start_ent)
+    try:
+        idx = next(i for i, e in enumerate(ents) if e is start_ent)
+    except StopIteration:
+        return []
+    for j in range(idx, min(idx + 12, len(ents))):
+        if ents[j].get("type") == "nubs":
+            pts = _nubs_world_polyline(ents[j])
+            if len(pts) >= 3:
+                return pts
+        if ents[j].get("type") in ("edge", "coedge", "face", "body", "loop"):
+            if j > idx:
+                break
+    return []
+
+
+def _clip_poly_to_ends(pts, a, b, chord_eps: float = 0.05) -> list:
+    """Keep the nubs polyline and snap endpoints to the edge vertices.
+
+    Near-straight samples (box sides, leftover local-frame nubs) collapse
+    to the chord so a cuboid stays 8 vertices / 12 triangles.
+    """
+    if not pts:
+        return pts
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    out = [np.asarray(p, dtype=float) for p in pts]
+    out[0] = a
+    out[-1] = b
+    ab = b - a
+    lab = float(np.linalg.norm(ab))
+    if lab < 1e-12 or len(out) < 3:
+        return [a, b] if lab >= 1e-12 else out
+    # Long near-straight samples are leftover intcurve chords; keep the
+    # interior points so a slight off-plane deviation drops the bridge
+    # from the on-plane set instead of merging shield-can islands.
+    if lab > 12.0:
+        return out
+    u = ab / lab
+    for p in out[1:-1]:
+        d = p - a
+        perp = float(np.linalg.norm(d - np.dot(d, u) * u))
+        if perp > chord_eps:
+            return out
+    return [a, b]
 
 
 def _join_samples(poly: list, samples: list, eps: float = 0.05) -> list:
@@ -594,6 +699,51 @@ def _chain_edges_by_geometry(edges: list, max_gap: float = 0.1):
     poly = _dedup_poly(poly)
     closed = len(poly) >= 3 and _loop_is_closed(poly)
     return _strip_spikes(poly), closed
+
+
+def _chain_plane_loops(edges, max_gap: float = 0.05) -> list:
+    """Chain on-plane edges into closed loops, repeatedly consuming edges.
+
+    Unlike the convex-hull fallback this recovers the true outline of a
+    chamfered / notched flange face and naturally separates disjoint shield
+    cans (which a hull would merge into one spanning plate).  Returns only
+    closed loops of >= 3 points, sorted by area descending.
+    """
+    remaining = [list(e) for e in edges if len(e) >= 2]
+    loops = []
+    for _ in range(64):
+        if not remaining:
+            break
+        chain, closed = _chain_edges_by_geometry(remaining, max_gap=max_gap)
+        if not chain or len(chain) < 3:
+            break
+        chain_pts = {(round(float(p[0]), 3), round(float(p[1]), 3),
+                      round(float(p[2]), 3)) for p in chain}
+
+        def _on_chain(pt, tol2=max_gap * max_gap):
+            k = (round(float(pt[0]), 3), round(float(pt[1]), 3),
+                 round(float(pt[2]), 3))
+            if k in chain_pts:
+                return True
+            for cx, cy, cz in chain_pts:
+                dx = pt[0] - cx
+                dy = pt[1] - cy
+                dz = pt[2] - cz
+                if dx * dx + dy * dy + dz * dz < tol2:
+                    return True
+            return False
+
+        kept = [e for e in remaining
+                if not (_on_chain(e[0]) and _on_chain(e[-1]))]
+        if len(kept) == len(remaining):
+            break
+        remaining = kept
+        if closed:
+            poly = _strip_spikes(_dedup_poly(chain))
+            if len(poly) >= 3:
+                loops.append(poly)
+    loops.sort(key=_abs_loop_area, reverse=True)
+    return loops
 
 
 def _walk_loop(ents, base, loop, end=None) -> tuple[list, bool]:
@@ -1132,7 +1282,7 @@ def _face_surface(ents, base, face):
     return None
 
 
-def _filter_edges_on_plane(edges_sampled: list, surf, eps: float = 0.05) -> list:
+def _filter_edges_on_plane(edges_sampled: list, surf, eps: float = 0.005) -> list:
     """Keep only sampled edges whose endpoints all lie on a planar surface.
 
     Used to drop coedges that reference a loop structurally (adjacent side-wall
@@ -1244,6 +1394,106 @@ def _collect_all_body_plane_edges(ents, base, end, surf, eps: float = 0.005) -> 
     return edges_out
 
 
+def _cluster_edge_groups(edges, gap: float = 0.2) -> list:
+    """Group polylines that share endpoints (disconnected cans stay separate)."""
+    usable = [e for e in edges if len(e) >= 2]
+    n = len(usable)
+    if n <= 1:
+        return [list(usable)] if usable else []
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    ends = [(np.asarray(e[0], dtype=float), np.asarray(e[-1], dtype=float))
+            for e in usable]
+    for i in range(n):
+        for j in range(i + 1, n):
+            ai, bi = ends[i]
+            aj, bj = ends[j]
+            if (np.linalg.norm(ai - aj) <= gap or np.linalg.norm(ai - bj) <= gap
+                    or np.linalg.norm(bi - aj) <= gap or np.linalg.norm(bi - bj) <= gap):
+                union(i, j)
+    groups = {}
+    for i, e in enumerate(usable):
+        groups.setdefault(find(i), []).append(e)
+    return list(groups.values())
+
+
+def _nest_hulls(hulls) -> list:
+    """Nest inner hulls as holes of a larger hull that contains their centroid."""
+    if not hulls:
+        return []
+    hulls = sorted(hulls, key=_abs_loop_area, reverse=True)
+    used = set()
+    groups = []
+    for i, outer in enumerate(hulls):
+        if i in used:
+            continue
+        try:
+            origin, u, v = _plane_basis(outer)
+        except Exception:
+            groups.append([outer])
+            continue
+        outer2 = _project_poly(outer, origin, u, v)
+        holes = []
+        for j, inner in enumerate(hulls):
+            if j <= i or j in used:
+                continue
+            if _abs_loop_area(inner) >= 0.85 * _abs_loop_area(outer):
+                continue
+            ic = np.mean(np.asarray(inner, dtype=float), axis=0)
+            ic2 = _project_poly([ic], origin, u, v)[0]
+            if _point_in_poly2(ic2, outer2):
+                holes.append(inner)
+                used.add(j)
+        groups.append([outer] + holes)
+    return groups
+
+
+def _hulls_from_clusters(clusters, surf) -> list:
+    hulls = []
+    for cl in clusters:
+        h = _strip_spikes(_dedup_poly(_plane_edges_convex_hull(cl, surf)))
+        if len(h) >= 3 and _abs_loop_area(h) > 0.05:
+            hulls.append(h)
+    return hulls
+
+
+def _hull_groups_from_edges(edges, surf, bridge: float = 12.0) -> list:
+    """Convex-hull each disconnected on-plane cluster; nest inner hulls as holes.
+
+    Leftover intcurve endpoint samples can chord between shield cans and
+    merge them into one wrap. If dropping those long chords yields two or
+    more substantial islands, tessellate the islands separately. A PCB
+    plate (long sides + tiny corner fillets) keeps the all-edge grouping
+    so the outer outline is not shattered.
+    """
+    clusters = _cluster_edge_groups(edges)
+    hulls = _hulls_from_clusters(clusters, surf)
+    nested = _nest_hulls(hulls)
+    short = [e for e in edges if len(e) >= 2 and _dist(e[0], e[-1]) <= bridge]
+    if len(short) >= 8:
+        short_hulls = _hulls_from_clusters(_cluster_edge_groups(short), surf)
+        substantial = [h for h in short_hulls if _abs_loop_area(h) > 3.0]
+        if len(substantial) >= 2:
+            wrap = max((_abs_loop_area(h) for h in hulls), default=0.0)
+            island_sum = sum(_abs_loop_area(h) for h in substantial)
+            # Cans: island areas fill a fair fraction of the chord-wrap.
+            # PCB corners: crumbs inside a much larger plate — keep the plate.
+            if wrap > 0 and island_sum >= 0.25 * wrap:
+                return _nest_hulls(substantial)
+    return nested
+
+
 def _tessellate_face(ents, base, face, end=None) -> list:
     ptrs = _payload_ptrs(face)
     surf = _face_surface(ents, base, face)
@@ -1280,55 +1530,6 @@ def _tessellate_face(ents, base, face, end=None) -> list:
         # stays local to each loop, so small cuboid can faces are not
         # polluted by edges from neighbouring cans that happen to share the
         # same z-level.
-        def _try_close_rect(poly, min_pts=4):
-            """If poly is an open chain whose 2-D convex hull has 4 vertices
-            (i.e. the open chain covers three sides of a planar rectangle),
-            append the first point to close it.  Recovers variant-layout
-            can-step faces (sh_cans:top mid-platform / top-rim) whose walks
-            and geometric chains both miss the last edge due to pointer-
-            layout ambiguity."""
-            if len(poly) < min_pts:
-                return None
-            try:
-                origin, u, v = _plane_basis(poly)
-                pts2 = []
-                for p in poly:
-                    d = np.asarray(p, dtype=float) - origin
-                    pts2.append((float(np.dot(d, u)), float(np.dot(d, v))))
-                uniq = sorted(set(pts2))
-                if len(uniq) < 3:
-                    return None
-                def _cross(o, a, b):
-                    return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
-                lower = []
-                for pt in uniq:
-                    while len(lower) >= 2 and _cross(lower[-2], lower[-1], pt) <= 1e-9:
-                        lower.pop()
-                    lower.append(pt)
-                upper = []
-                for pt in reversed(uniq):
-                    while len(upper) >= 2 and _cross(upper[-2], upper[-1], pt) <= 1e-9:
-                        upper.pop()
-                    upper.append(pt)
-                hull = lower[:-1] + upper[:-1]
-                if len(hull) < 3:
-                    return None
-                # Accept if hull has exactly 3 or 4 distinct vertices and
-                # closing the chain spans a side comparable to the hull size.
-                dx = max(x for x, y in hull) - min(x for x, y in hull)
-                dy = max(y for x, y in hull) - min(y for x, y in hull)
-                hull_span = max(dx, dy)
-                if hull_span <= 0:
-                    return None
-                gap_vec = np.asarray(poly[0], dtype=float) - np.asarray(poly[-1], dtype=float)
-                gap_len = float(np.linalg.norm(gap_vec))
-                if gap_len <= 1e-6 or gap_len > 3.0 * hull_span:
-                    return None
-                closed_poly = list(poly) + [poly[0]]
-                return closed_poly
-            except Exception:
-                return None
-
         rebuilt_polys = []
         for walk_poly, walk_closed in walked:
             if walk_closed and len(walk_poly) >= 3:
@@ -1343,28 +1544,11 @@ def _tessellate_face(ents, base, face, end=None) -> list:
                     edge_samples.append(s)
             edge_samples = _filter_edges_on_plane(edge_samples, surf)
             used_fallback = False
-            best_poly, best_closed = None, False
             if edge_samples:
                 geom_poly, geom_closed = _chain_edges_by_geometry(edge_samples)
-                if geom_closed and len(geom_poly) >= 3 and (not walk_closed or len(geom_poly) > len(walk_poly)):
-                    best_poly, best_closed = geom_poly, True
+                if geom_closed and len(geom_poly) > len(walk_poly):
+                    rebuilt_polys.append(geom_poly)
                     used_fallback = True
-                elif len(geom_poly) >= 4 and not geom_closed:
-                    rect_poly = _try_close_rect(geom_poly, min_pts=4)
-                    if rect_poly is not None:
-                        best_poly, best_closed = rect_poly, True
-                        used_fallback = True
-            if not used_fallback and walk_closed and len(walk_poly) >= 3:
-                rebuilt_polys.append(walk_poly)
-                continue
-            if not used_fallback and len(walk_poly) >= 4 and not walk_closed:
-                rect_poly = _try_close_rect(walk_poly, min_pts=4)
-                if rect_poly is not None:
-                    best_poly, best_closed = rect_poly, True
-                    used_fallback = True
-            if best_poly is not None and best_closed and len(best_poly) >= 4:
-                rebuilt_polys.append(best_poly)
-                used_fallback = True
             if not used_fallback and walk_closed and len(walk_poly) >= 3:
                 rebuilt_polys.append(walk_poly)
         polys = rebuilt_polys if rebuilt_polys else polys
@@ -1403,84 +1587,42 @@ def _tessellate_face(ents, base, face, end=None) -> list:
                     ref_area = float((mids2[:, 0].max() - mids2[:, 0].min()) * (mids2[:, 1].max() - mids2[:, 1].min()))
         body_plane_edges = _collect_all_body_plane_edges(ents, base, end, surf)
         current_max_area = max((_area2_of(p) for p in polys), default=0.0)
-        # Consistency guard: compute a face-local bbox area from the pointer
-        # walks and rebuilt polygons.  Variant-layout coedges sometimes
-        # cause _collect_loop_coedges to grab coedges from neighbouring
-        # faces (they share loop-record references indirectly).  That
-        # inflates ref_area far beyond the real face extent — the hull
-        # fallback then builds a giant 40×20 mm hull for a ~2×1 mm can-step
-        # face and produces zero valid triangles.  Require that ref_area is
-        # at most a moderate multiple of the walk-bbox area before firing.
-        walk_bbox_area = 0.0
-        try:
-            all_p = []
-            for wp, wc in walked:
-                all_p.extend(wp)
-            all_p.extend([pt for poly in polys for pt in poly])
-            if len(all_p) >= 3:
-                vecs_surf2 = _geom_vecs(surf)
-                if len(vecs_surf2) >= 3:
-                    s_o2 = np.asarray(vecs_surf2[0], dtype=float)
-                    s_a2 = _unit(np.asarray(vecs_surf2[1], dtype=float))
-                    tmp2 = np.array([1.0, 0.0, 0.0]) if abs(s_a2[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-                    u2 = _unit(np.cross(s_a2, tmp2))
-                    v2 = np.cross(s_a2, u2)
-                    arr = np.asarray(all_p, dtype=float)
-                    x2 = np.dot(arr - s_o2, u2)
-                    y2 = np.dot(arr - s_o2, v2)
-                    wba = (float(x2.max()) - float(x2.min())) * (float(y2.max()) - float(y2.min()))
-                    walk_bbox_area = max(wba, 1e-6)
-        except Exception:
-            walk_bbox_area = 0.0
-        ref_area_ok = True
-        if walk_bbox_area > 1e-3 and ref_area > 100.0:
-            if ref_area > 30.0 * walk_bbox_area:
-                ref_area_ok = False
-        polys_bbox_area = walk_bbox_area  # already includes union of polys & walks
-        current_large_poly_ok = current_max_area < 0.30 * ref_area
-        polys_too_small_for_ref = ref_area > 150.0 and polys_bbox_area < 0.50 * ref_area
-        if (ref_area_ok and ref_area > 150.0 and (current_large_poly_ok or polys_too_small_for_ref)
-                and len(body_plane_edges) >= 12 and len(face_plane_edges) >= 6):
-            full_edges = body_plane_edges
-            if full_edges:
-                hull = _plane_edges_convex_hull(full_edges, surf)
+        plane_cluster_tris = None
+        groups = _hull_groups_from_edges(body_plane_edges, surf) if body_plane_edges else []
+        if len(groups) >= 2:
+            # Disjoint on-plane islands (shield-can lids): never triangulate
+            # them as one outer-with-holes, which fills the PCB between cans.
+            # Only replace THIS face when its recovered loop is a spanning
+            # wrap (or empty).  A finished box lid on the same z keeps its
+            # own triangles.
+            island_sum = sum(_abs_loop_area(g[0]) for g in groups)
+            wrap_face = (
+                current_max_area > 1.4 * island_sum
+                or (current_max_area < 0.15 * island_sum
+                    and ref_area > 1.4 * island_sum)
+            )
+            if wrap_face:
+                extra = []
+                for g in groups:
+                    extra.extend(_triangulate_plane(g))
+                if extra:
+                    plane_cluster_tris = extra
+        elif (ref_area > 150.0 and current_max_area < 0.30 * ref_area
+                and len(body_plane_edges) >= 12 and len(face_plane_edges) >= 12
+                and len(groups) == 1):
+                hull = groups[0][0]
                 hull = _strip_spikes(_dedup_poly(hull))
                 if len(hull) >= 3:
                     hull_area = _abs_loop_area(hull)
-                    # Existing identity-recovered loops are always kept as
-                    # explicit holes.  Then sweep every body-plane edge via
-                    # endpoint stitching to catch any additional closed
-                    # interior contours that identity-guided resolution
-                    # missed (variant pointer layouts).  Any closed loop
-                    # whose area is a small fraction of the hull area is
-                    # appended to the hole list; the outer boundary can
-                    # produce a duplicate large closed contour via the
-                    # same sweep so a 70 % area guard drops it.
-                    hole_polys = []
-                    for p in polys:
-                        pa = _abs_loop_area(p)
-                        # Only treat pre-recovered polygons as holes when
-                        # they are clearly interior: small area relative to
-                        # the convex hull AND bounded well inside the hull's
-                        # 2-D footprint.  Partial outer-contour fragments
-                        # recovered from geom-chain walks sit on the hull
-                        # boundary and can be 20-50 % of hull area — we must
-                        # NOT subtract them as holes or the plate face ends
-                        # up with giant interior "bites" cut out of it.
-                        if pa < 0.30 * hull_area and pa > 0.001:
-                            hole_polys.append(p)
-                    # Sweep body-plane edges repeatedly with bidirectional
-                    # geometric stitching; each pass pulls out one stitched
-                    # contour (outer perimeter, interior holes, or disjoint
-                    # fragments).  Closed contours smaller than the hull are
-                    # treated as holes; the first large (≈hull-size) closed
-                    # contour is skipped because it duplicates the outer hull
-                    # already in hand.
-                    remaining_edges = [list(e) for e in full_edges if len(e) >= 2]
+                    hole_polys = list(groups[0][1:])
+                    hole_polys.extend(
+                        p for p in polys if _abs_loop_area(p) < hull_area)
+                    remaining_edges = [list(e) for e in body_plane_edges if len(e) >= 2]
                     for _sweep_pass in range(20):
                         if not remaining_edges:
                             break
-                        chain, chain_closed = _chain_edges_by_geometry(remaining_edges, max_gap=0.1)
+                        chain, chain_closed = _chain_edges_by_geometry(
+                            remaining_edges, max_gap=0.1)
                         if not chain:
                             break
                         chain_key = set()
@@ -1516,6 +1658,9 @@ def _tessellate_face(ents, base, face, end=None) -> list:
                                 if cand_area < 0.7 * hull_area and cand_area > 0.01:
                                     hole_polys.append(cand)
                     polys = [hull] + hole_polys
+
+        if plane_cluster_tris is not None:
+            return plane_cluster_tris
 
     # Align the outer (first / largest) polygon winding to the surface normal
     # so triangles produced by _triangulate_plane face out of the ACIS solid

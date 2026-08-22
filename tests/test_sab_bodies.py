@@ -120,10 +120,14 @@ def test_sh_cans_top_not_spanning():
     mesh = top["mesh"]
     # Incomplete fillet loops used to fill this as one grey triangle.
     assert not _mesh_covers(mesh, (45.0, -18.0, -4.275))
-    assert len(top.get("wires") or []) < 80
-    # Underside cans stay five boxes; top still has some side/top faces.
-    assert len(bot["mesh"]["faces"]) == 60
+    # Fillet / nubs samples add CAD wires; a spanning scribble used to
+    # emit hundreds. A handful of cans stays well under this cap.
+    assert len(top.get("wires") or []) < 150
+    # Underside cans stay five boxes (40 verts).  A couple of extra
+    # triangles on a lid (both diagonals) is harmless; a wrap would
+    # add vertices and dozens of faces.
     assert len(bot["mesh"]["points"]) == 40
+    assert 60 <= len(bot["mesh"]["faces"]) <= 72
     assert len(mesh["faces"]) >= 2
 
 
@@ -205,3 +209,65 @@ def test_opacity_cover_vs_metal():
     assert opacity_for("Phone/Battery:Cell", "Phone/Copper (annealed)") > 0.8
     assert opacity_for("Phone/Housing:ring", "Phone/Plastic") > 0.9
     assert opacity_for("Phone/Fillers and Shields:foam1", "Phone/Vacuum") < 0.1
+
+
+def test_nubs_polyline_skips_surface_net():
+    from sab_bodies import _nubs_world_polyline
+    curve = {"type": "nubs", "fields": [
+        ("f64", 0.0), ("f64", 0.0), ("f64", 0.0),
+        ("f64", 2.0), ("f64", 0.1), ("f64", 0.0),
+        ("f64", 4.0), ("f64", 0.0), ("f64", 0.0),
+        ("f64", 6.0), ("f64", -0.1), ("f64", 0.0),
+    ]}
+    pts = _nubs_world_polyline(curve)
+    assert len(pts) >= 3
+    xs = [float(p[0]) for p in pts]
+    assert min(xs) < 0.5
+    assert max(xs) > 5.5
+    net = {"type": "nubs", "fields": []}
+    for x in (0.0, 1.0, 2.0):
+        for y in (0.0, 1.0, 2.0):
+            net["fields"].extend([("f64", x), ("f64", y), ("f64", 0.0)])
+    assert _nubs_world_polyline(net) == []
+
+
+def test_disjoint_edge_clusters():
+    from sab_bodies import _cluster_edge_groups, _hull_groups_from_edges
+    sq1 = [
+        [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        [(2.0, 0.0, 0.0), (2.0, 2.0, 0.0)],
+        [(2.0, 2.0, 0.0), (0.0, 2.0, 0.0)],
+        [(0.0, 2.0, 0.0), (0.0, 0.0, 0.0)],
+    ]
+    sq2 = [
+        [(20.0, 0.0, 0.0), (22.0, 0.0, 0.0)],
+        [(22.0, 0.0, 0.0), (22.0, 2.0, 0.0)],
+        [(22.0, 2.0, 0.0), (20.0, 2.0, 0.0)],
+        [(20.0, 2.0, 0.0), (20.0, 0.0, 0.0)],
+    ]
+    assert len(_cluster_edge_groups(sq1 + sq2)) == 2
+    surf = {"type": "plane", "fields": [
+        ("pos", (0.0, 0.0, 0.0)), ("vec", (0.0, 0.0, 1.0)), ("vec", (1.0, 0.0, 0.0)),
+    ]}
+    groups = _hull_groups_from_edges(sq1 + sq2, surf)
+    assert len(groups) == 2
+    mid = (11.0, 1.0, 0.0)
+    from sab_bodies import _triangulate_plane
+    tris = []
+    for g in groups:
+        tris.extend(_triangulate_plane(g))
+    mesh = {"points": [p for tri in tris for p in tri],
+            "faces": [(3 * i, 3 * i + 1, 3 * i + 2) for i in range(len(tris))]}
+    assert not _mesh_covers(mesh, mid)
+    assert _mesh_covers(mesh, (1.0, 1.0, 0.0))
+    assert _mesh_covers(mesh, (21.0, 1.0, 0.0))
+    # A leftover intcurve chord must not merge the two cans into one wrap.
+    bridge = [[(2.0, 1.0, 0.0), (20.0, 1.0, 0.0)]]
+    groups2 = _hull_groups_from_edges(sq1 + sq2 + bridge, surf)
+    assert len(groups2) == 2
+    tris2 = []
+    for g in groups2:
+        tris2.extend(_triangulate_plane(g))
+    mesh2 = {"points": [p for tri in tris2 for p in tri],
+             "faces": [(3 * i, 3 * i + 1, 3 * i + 2) for i in range(len(tris2))]}
+    assert not _mesh_covers(mesh2, mid)

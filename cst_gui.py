@@ -401,7 +401,11 @@ class CSTMainWindow(QMainWindow):
             ("Wireframe", "wireframe", lambda: self._set_drawing_mode("Wireframe")),
             ("Shading", "faces", lambda: self._set_drawing_mode("Shading")),
             ("Transparent", "component", lambda: self._set_drawing_mode("Transparent")),
-            ("Bounding Box", "bounding", self._nyi_slot("Bounding Box")),
+            ("Bounding Box", "bounding", lambda: self._set_drawing_mode("BoundingBox")),
+        ]))
+        layout.addWidget(self._make_ribbon_group("Tools", [
+            ("Slice", "slice", lambda: self._on_slice()),
+            ("Measure", "dimensions", lambda: self._on_measure()),
         ]))
         layout.addWidget(self._make_ribbon_group("Windows", [
             ("Navigation", "list", lambda: self._toggle_pane("nav")),
@@ -716,9 +720,37 @@ class CSTMainWindow(QMainWindow):
 
     def _set_drawing_mode(self, mode: str) -> None:
         self._drawing_mode = mode
+        if mode != "BoundingBox" and getattr(self.viewport, "_measure_mode", False):
+            pass
         self.viewport.set_drawing_mode(mode)
         self.message_win.info(f"Drawing: {mode}")
         self._status_mode.setText(f"Drawing: {mode}")
+        if mode != "BoundingBox":
+            self._status_dim.setText("Normal")
+        else:
+            self._status_dim.setText("Bounding Box")
+
+    def _on_slice(self) -> None:
+        order = [None, "x", "y", "z"]
+        cur = getattr(self.viewport, "_clip_axis", None)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "x"
+        self.viewport.set_clip_axis(nxt)
+        if nxt is None:
+            self.message_win.info("Clip plane off")
+            self._status_dim.setText("Normal")
+        else:
+            self.message_win.info(f"Clip plane {nxt.upper()} at model mid")
+            self._status_dim.setText(f"Clip {nxt.upper()}")
+
+    def _on_measure(self) -> None:
+        on = not getattr(self.viewport, "_measure_mode", False)
+        self.viewport.set_measure_mode(on)
+        if on:
+            self.message_win.info("Measure: click two points")
+            self._status_mode.setText("Measure")
+        else:
+            self.message_win.info("Measure off")
+            self._status_mode.setText(f"Drawing: {self._drawing_mode}")
 
     def keyPressEvent(self, event):
         # cabdecoding Draw Window keys: F fit, X/Y/Z orthogonal

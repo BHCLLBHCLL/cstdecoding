@@ -1115,6 +1115,7 @@ class CST3DCanvas(QWidget):
     """Fallback isometric 3D viewport (QPainter) when VTK/OpenGL is unavailable."""
 
     solid_picked = pyqtSignal(str)
+    status_coords = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1130,6 +1131,10 @@ class CST3DCanvas(QWidget):
         self._last_pos = None
         self._press_pos = None
         self._selected = ""
+        self._clip_axis = None
+        self._measure_mode = False
+        self._measure_pts = []
+        self._measure_dist = None
         self._color_list = [
             (0.95, 0.85, 0.3), (0.3, 0.75, 0.4), (0.8, 0.3, 0.3),
             (0.3, 0.5, 0.9), (0.7, 0.4, 0.7), (0.9, 0.6, 0.2),
@@ -1225,6 +1230,7 @@ class CST3DCanvas(QWidget):
         self._draw_axes(p)
         self._draw_components(p)
         self._draw_ports(p)
+        self._draw_overlays(p)
         self._draw_info(p)
         p.end()
 
@@ -1287,11 +1293,15 @@ class CST3DCanvas(QWidget):
             else:
                 alpha_scale = 1.0
             label = "" if many else name.split(":")[-1]
+            bounds = comp.get("bounds")
+            if self._drawing_mode == "BoundingBox":
+                if bounds:
+                    self._draw_box(p, bounds, color, label, 0.55)
+                continue
             mesh = comp.get("mesh") or {}
             if mesh.get("points") and mesh.get("faces"):
                 self._draw_mesh(p, mesh, color, label, alpha_scale)
                 continue
-            bounds = comp.get("bounds")
             if not bounds:
                 continue
             self._draw_box(p, bounds, color, label, alpha_scale)
@@ -1347,6 +1357,10 @@ class CST3DCanvas(QWidget):
             if max(a, b, c) >= len(points):
                 continue
             z = (points[a][2] + points[b][2] + points[c][2]) / 3.0
+            if self._clip_hides((
+                    (points[a][0] + points[b][0] + points[c][0]) / 3.0,
+                    (points[a][1] + points[b][1] + points[c][1]) / 3.0, z)):
+                continue
             order.append((z, fi, a, b, c))
         order.sort()
         r0, g0, b0 = [int(ch * 255) for ch in color]
@@ -1503,6 +1517,22 @@ class CST3DCanvas(QWidget):
             self.update()
             if name:
                 self.solid_picked.emit(name)
+                center = self._hit_center(name)
+                if center:
+                    self.status_coords.emit(
+                        f"({center[0]:.3g}, {center[1]:.3g}, {center[2]:.3g})")
+                    if self._measure_mode:
+                        self._measure_pts.append(center)
+                        if len(self._measure_pts) >= 2:
+                            a, b = self._measure_pts[-2], self._measure_pts[-1]
+                            dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+                            self._measure_dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+                            self.status_coords.emit(
+                                f"d={self._measure_dist:.4g} mm  "
+                                f"({a[0]:.3g},{a[1]:.3g},{a[2]:.3g})→"
+                                f"({b[0]:.3g},{b[1]:.3g},{b[2]:.3g})")
+                            self._measure_pts = self._measure_pts[-2:]
+                        self.update()
         self._dragging = False
         self._last_pos = None
         self._press_pos = None
@@ -1531,6 +1561,46 @@ class CST3DCanvas(QWidget):
                 hit = name
         return hit
 
+    def _clip_hides(self, pt) -> bool:
+        axis = self._clip_axis
+        if not axis or not self._bounds or not pt:
+            return False
+        xmin, xmax, ymin, ymax, zmin, zmax = self._bounds
+        mid = {"x": 0.5 * (xmin + xmax), "y": 0.5 * (ymin + ymax),
+               "z": 0.5 * (zmin + zmax)}.get(axis)
+        val = {"x": pt[0], "y": pt[1], "z": pt[2]}.get(axis)
+        return mid is not None and val is not None and val > mid
+
+    def _draw_overlays(self, p):
+        if self._selected:
+            for comp in self._project_data.get("components") or []:
+                if comp.get("name") == self._selected and comp.get("bounds"):
+                    self._draw_box(p, comp["bounds"], (1.0, 0.82, 0.12), "", 0.25)
+                    break
+        if len(self._measure_pts) >= 1:
+            p.setPen(QPen(QColor(180, 40, 40), 2))
+            p.setBrush(QColor(180, 40, 40))
+            s0 = self._world_to_screen(*self._measure_pts[0])
+            p.drawEllipse(int(s0[0]) - 3, int(s0[1]) - 3, 6, 6)
+        if len(self._measure_pts) >= 2:
+            s1 = self._world_to_screen(*self._measure_pts[1])
+            p.drawEllipse(int(s1[0]) - 3, int(s1[1]) - 3, 6, 6)
+            p.drawLine(int(s0[0]), int(s0[1]), int(s1[0]), int(s1[1]))
+            if self._measure_dist is not None:
+                p.setFont(QFont("Segoe UI", 9))
+                p.drawText(int((s0[0] + s1[0]) / 2) + 4, int((s0[1] + s1[1]) / 2),
+                           f"{self._measure_dist:.3g} mm")
+
+    def _hit_center(self, name: str):
+        for comp in self._project_data.get("components") or []:
+            if comp.get("name") != name:
+                continue
+            b = comp.get("bounds")
+            if not b or len(b) != 6:
+                return None
+            return (0.5 * (b[0] + b[1]), 0.5 * (b[2] + b[3]), 0.5 * (b[4] + b[5]))
+        return None
+
 
 class CST3DViewport(QWidget):
     """3D viewport: VTK trackball + orientation widget, QPainter fallback."""
@@ -1557,6 +1627,11 @@ class CST3DViewport(QWidget):
         self._parallel = True
         self._selected = ""
         self._pick_xy = None
+        self._clip_axis = None
+        self._measure_mode = False
+        self._measure_pts = []
+        self._measure_dist = None
+        self._project_data = {}
         if enable_3d and _HAS_VTK and not self._is_offscreen():
             try:
                 self._init_vtk()
@@ -1708,6 +1783,7 @@ class CST3DViewport(QWidget):
     def _init_canvas(self) -> None:
         self._canvas = CST3DCanvas(self)
         self._canvas.solid_picked.connect(self.solid_picked)
+        self._canvas.status_coords.connect(self.status_coords)
         self._layout.addWidget(self._canvas)
         self._renderer = None
         self._using_vtk = False
@@ -1831,6 +1907,28 @@ class CST3DViewport(QWidget):
         self._renderer.AddActor(actor)
         self._actors.append((name, actor, "glyph"))
         self._update_bounds(bounds)
+
+    def add_bbox_outline(self, name, bounds, color=(0.18, 0.18, 0.22)):
+        if vtk is None or not self._using_vtk or not self._renderer:
+            return
+        xmin, xmax, ymin, ymax, zmin, zmax = bounds
+        cube = vtk.vtkCubeSource()
+        cube.SetBounds(xmin, xmax, ymin, ymax, zmin, zmax)
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(cube.GetOutputPort())
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        prop.SetColor(*color)
+        prop.SetLineWidth(1.2)
+        prop.SetRepresentationToWireframe()
+        try:
+            prop.LightingOff()
+        except Exception:
+            pass
+        actor.SetVisibility(0)
+        self._renderer.AddActor(actor)
+        self._actors.append((name, actor, "bbox"))
 
     def add_glyph_point(self, name, xyz, color=(0.16, 0.62, 0.16)):
         if vtk is None or not self._using_vtk or not self._renderer:
@@ -2037,20 +2135,43 @@ class CST3DViewport(QWidget):
         picker = vtk.vtkPropPicker()
         picker.Pick(float(x), float(y), 0, self._renderer)
         actor = picker.GetActor()
+        pos = picker.GetPickPosition()
         name = ""
         for n, a, k in self._actors:
             if a is actor and k == "surf":
                 name = n
                 break
+        if self._measure_mode and pos is not None:
+            pt = (float(pos[0]), float(pos[1]), float(pos[2]))
+            if abs(pt[0]) + abs(pt[1]) + abs(pt[2]) > 1e-9:
+                self._measure_pts.append(pt)
+                self.status_coords.emit(f"({pt[0]:.3g}, {pt[1]:.3g}, {pt[2]:.3g})")
+                if len(self._measure_pts) >= 2:
+                    a, b = self._measure_pts[-2], self._measure_pts[-1]
+                    d = ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2
+                         + (b[2] - a[2]) ** 2) ** 0.5
+                    self._measure_dist = d
+                    self.status_coords.emit(
+                        f"d={d:.4g} mm  ({a[0]:.3g},{a[1]:.3g},{a[2]:.3g})→"
+                        f"({b[0]:.3g},{b[1]:.3g},{b[2]:.3g})")
+                    self._measure_pts = self._measure_pts[-2:]
+                    if len(self._measure_pts) == 2:
+                        self.add_glyph_line("__measure__", a, b, (0.85, 0.15, 0.15))
+                        self._render()
+                return
         self.select_solid(name)
         if name:
             self.solid_picked.emit(name)
             try:
-                b = actor.GetBounds()
-                cx = 0.5 * (b[0] + b[1])
-                cy = 0.5 * (b[2] + b[3])
-                cz = 0.5 * (b[4] + b[5])
-                self.status_coords.emit(f"({cx:.3g}, {cy:.3g}, {cz:.3g})")
+                if pos is not None and abs(pos[0]) + abs(pos[1]) + abs(pos[2]) > 1e-9:
+                    self.status_coords.emit(
+                        f"({pos[0]:.3g}, {pos[1]:.3g}, {pos[2]:.3g})")
+                else:
+                    b = actor.GetBounds()
+                    cx = 0.5 * (b[0] + b[1])
+                    cy = 0.5 * (b[2] + b[3])
+                    cz = 0.5 * (b[4] + b[5])
+                    self.status_coords.emit(f"({cx:.3g}, {cy:.3g}, {cz:.3g})")
             except Exception:
                 pass
 
@@ -2077,14 +2198,21 @@ class CST3DViewport(QWidget):
             hide = name in self._hidden or name.split(":")[-1] in self._hidden
             prop = actor.GetProperty()
             if kind == "wire":
-                actor.SetVisibility(0 if hide else 1)
+                actor.SetVisibility(0 if hide or mode == "BoundingBox" else 1)
                 prop.SetColor(0.22, 0.22, 0.24)
                 prop.SetLineWidth(1.15 if mode == "Wireframe" else 1.0)
                 continue
             if kind == "glyph":
-                actor.SetVisibility(0 if hide else 1)
+                actor.SetVisibility(0 if hide or mode == "BoundingBox" else 1)
+                continue
+            if kind == "bbox":
+                show_bb = mode == "BoundingBox"
+                actor.SetVisibility(0 if hide or not show_bb else 1)
                 continue
             if hide:
+                actor.SetVisibility(0)
+                continue
+            if mode == "BoundingBox":
                 actor.SetVisibility(0)
                 continue
             if mode == "Wireframe" and name in wired:
@@ -2146,10 +2274,53 @@ class CST3DViewport(QWidget):
             self._canvas.fit()
 
     def render_project(self, project_data: dict) -> None:
+        self._project_data = project_data or {}
         if self._using_vtk and self._renderer:
             self._render_vtk(project_data)
         elif self._canvas:
             self._canvas.render_project(project_data)
+
+    def set_clip_axis(self, axis) -> None:
+        self._clip_axis = axis if axis in ("x", "y", "z") else None
+        if self._canvas:
+            self._canvas._clip_axis = self._clip_axis
+            self._canvas.update()
+        if self._using_vtk:
+            self._apply_clip()
+            self._render()
+
+    def set_measure_mode(self, on: bool) -> None:
+        self._measure_mode = bool(on)
+        self._measure_pts = []
+        self._measure_dist = None
+        if self._canvas:
+            self._canvas._measure_mode = self._measure_mode
+            self._canvas._measure_pts = []
+            self._canvas._measure_dist = None
+            self._canvas.update()
+
+    def _apply_clip(self) -> None:
+        if vtk is None or not self._using_vtk or not self._bounds:
+            return
+        axis = self._clip_axis
+        xmin, xmax, ymin, ymax, zmin, zmax = self._bounds[:6]
+        origin = (0.5 * (xmin + xmax), 0.5 * (ymin + ymax), 0.5 * (zmin + zmax))
+        normal = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0),
+                  "z": (0.0, 0.0, 1.0)}.get(axis)
+        for _name, actor, _kind in self._actors:
+            mapper = actor.GetMapper()
+            if mapper is None:
+                continue
+            try:
+                mapper.RemoveAllClippingPlanes()
+            except Exception:
+                continue
+            if normal is None:
+                continue
+            plane = vtk.vtkPlane()
+            plane.SetOrigin(*origin)
+            plane.SetNormal(*normal)
+            mapper.AddClippingPlane(plane)
 
     def _render_vtk(self, project_data: dict) -> None:
         self.clear()
@@ -2179,6 +2350,8 @@ class CST3DViewport(QWidget):
                               wires=wires)
             elif bounds:
                 self.add_box(name, bounds, color, opacity)
+            if bounds:
+                self.add_bbox_outline(name, bounds)
         for port in project_data.get("ports") or []:
             pname = port.get("name") or f"port{port.get('port_number', '')}"
             if port.get("p1_xyz") and port.get("p2_xyz"):
@@ -2190,6 +2363,7 @@ class CST3DViewport(QWidget):
             if xyz:
                 self.add_glyph_point(probe.get("name") or "probe", xyz)
         self.set_drawing_mode(self._drawing_mode)
+        self._apply_clip()
         if self._selected:
             self._apply_highlight()
         if self._bounds:
@@ -2230,7 +2404,7 @@ class CST3DViewport(QWidget):
     @staticmethod
     def cad_edges_in_mode(mode: str) -> bool:
         """CST Shading/Transparent still draw B-rep silhouettes, not only Wireframe."""
-        return mode in ("Wireframe", "Shading", "Transparent")
+        return mode in ("Wireframe", "Shading", "Transparent", "BoundingBox")
 
     def is_vtk_available(self) -> bool:
         return self._using_vtk

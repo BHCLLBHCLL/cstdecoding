@@ -277,6 +277,21 @@ def test_drawing_mode(viewer):
     assert cst_gui.CST3DViewport.cad_edges_in_mode("Shading")
     assert cst_gui.CST3DViewport.cad_edges_in_mode("Transparent")
     assert cst_gui.CST3DViewport.cad_edges_in_mode("Wireframe")
+    viewer._set_drawing_mode("BoundingBox")
+    assert viewer._drawing_mode == "BoundingBox"
+    assert viewer.viewport._drawing_mode == "BoundingBox"
+    viewer._set_drawing_mode("Shading")
+    viewer._on_slice()
+    assert viewer.viewport._clip_axis == "x"
+    viewer._on_slice()
+    assert viewer.viewport._clip_axis == "y"
+    viewer._on_slice()
+    viewer._on_slice()
+    assert viewer.viewport._clip_axis is None
+    viewer._on_measure()
+    assert viewer.viewport._measure_mode is True
+    viewer._on_measure()
+    assert viewer.viewport._measure_mode is False
     assert viewer.viewport._parallel is True
 
 
