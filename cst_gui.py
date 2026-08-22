@@ -50,7 +50,11 @@ from cst_dialogs import (
 from cst_icons import AppIcons
 from cst_panes import (
     CST3DCanvas, CST3DViewport, MessageWindow, NavigationTree, PaneFrame,
-    ParameterList, ProgressPanel, PropertyInspector, split_solid_path,
+    ParameterList, ProgressPanel, PropertyInspector, ResultPlot,
+    split_solid_path,
+)
+from cst_results import (
+    parse_result_bytes, result_has_curve, result_has_grid,
 )
 from sab_bodies import extract_bodies, opacity_for
 
@@ -58,7 +62,7 @@ from sab_bodies import extract_bodies, opacity_for
 __all__ = [
     "CSTMainWindow", "AppIcons", "PaneFrame", "MessageWindow",
     "NavigationTree", "ParameterList", "ProgressPanel", "CST3DViewport",
-    "CST3DCanvas", "PropertyInspector",
+    "CST3DCanvas", "PropertyInspector", "ResultPlot",
 ]
 
 
@@ -90,6 +94,7 @@ class CSTMainWindow(QMainWindow):
         self._undo = UndoStack()
         self._restoring = False
         self._selected_solid = ""
+        self._result_rec: dict = {}
         self._build_ui()
         self._apply_style()
         if path:
@@ -368,9 +373,9 @@ class CSTMainWindow(QMainWindow):
         layout.setSpacing(6)
         # Plot_Results_Plot 1D / Field Farfield
         layout.addWidget(self._make_ribbon_group("Results", [
-            ("1D Plot", "1d", self._nyi_slot("1D Results")),
-            ("2D/3D", "2d", self._nyi_slot("2D/3D Results")),
-            ("Farfield", "farfield", self._nyi_slot("Farfield")),
+            ("1D Plot", "1d", lambda: self._show_result_kind("result_1d")),
+            ("2D/3D", "2d", lambda: self._show_result_kind("result_2d")),
+            ("Farfield", "farfield", lambda: self._show_result_kind("farfield")),
             ("Smith", "1d", self._nyi_slot("Smith Chart")),
         ]))
         layout.addWidget(self._make_ribbon_group("Field", [
@@ -378,7 +383,7 @@ class CSTMainWindow(QMainWindow):
             ("On Curve", "curves", self._nyi_slot("Field On Curve")),
         ]))
         layout.addWidget(self._make_ribbon_group("Image", [
-            ("Export", "export", self._nyi_slot("Image Export")),
+            ("Export", "export", lambda: self._on_export_plot()),
             ("Copy View", "screenshot", self._nyi_slot("Copy View")),
         ]))
         layout.addStretch(1)
@@ -470,12 +475,16 @@ class CSTMainWindow(QMainWindow):
         self.viewport = CST3DViewport(enable_3d=self._enable_3d)
         self.viewport.solid_picked.connect(self._on_solid_picked)
         self.viewport.status_coords.connect(self._on_pick_coords)
+        self.result_plot = ResultPlot()
+        self._view_stack = QStackedWidget()
         # CST 3D view has no pane caption; keep a thin frame only
         view_host = QFrame()
         view_host.setObjectName("ViewportFrame")
         vh = QVBoxLayout(view_host)
         vh.setContentsMargins(0, 0, 0, 0)
-        vh.addWidget(self.viewport)
+        self._view_stack.addWidget(self.viewport)
+        self._view_stack.addWidget(self.result_plot)
+        vh.addWidget(self._view_stack)
 
         self.message_win = MessageWindow()
         self.msg_pane = PaneFrame("Messages", self.message_win)
@@ -773,6 +782,7 @@ class CSTMainWindow(QMainWindow):
         if kind in ("solid", "component"):
             self._selected_solid = label
             self.viewport.select_solid(label)
+            self._show_viewport()
             comp = payload if isinstance(payload, dict) else self._find_component(label)
             bounds = (comp or {}).get("bounds")
             if bounds and len(bounds) == 6:
@@ -780,9 +790,14 @@ class CSTMainWindow(QMainWindow):
                 cy = 0.5 * (bounds[2] + bounds[3])
                 cz = 0.5 * (bounds[4] + bounds[5])
                 self._status_xy.setText(f"({cx:.3g}, {cy:.3g}, {cz:.3g})")
+        elif kind in ("result_1d", "result_2d", "farfield", "table", "results"):
+            self._selected_solid = ""
+            self.viewport.select_solid("")
+            self._open_result(payload if isinstance(payload, dict) else {"name": label})
         else:
             self._selected_solid = ""
             self.viewport.select_solid("")
+            self._show_viewport()
 
     def _on_solid_picked(self, name: str) -> None:
         self._selected_solid = name
@@ -1944,7 +1959,88 @@ class CSTMainWindow(QMainWindow):
             return False
 
     def _on_export(self) -> None:
+        if getattr(self, "_view_stack", None) is not None and self._view_stack.currentWidget() is self.result_plot:
+            self._on_export_plot()
+            return
         self._nyi("Export")
+
+    def _show_viewport(self) -> None:
+        if getattr(self, "_view_stack", None) is not None:
+            self._view_stack.setCurrentWidget(self.viewport)
+
+    def _show_plot(self) -> None:
+        if getattr(self, "_view_stack", None) is not None:
+            self._view_stack.setCurrentWidget(self.result_plot)
+
+    def _result_bytes(self, rec: dict) -> bytes:
+        if rec.get("bytes"):
+            return rec["bytes"]
+        path = (rec.get("path") or "").replace("\\", "/")
+        if path and path in self._archive:
+            return self._archive[path]
+        return b""
+
+    def _open_result(self, rec: dict) -> None:
+        data = self._result_bytes(rec)
+        parsed = parse_result_bytes(data, rec.get("path") or rec.get("name") or "")
+        parsed["name"] = rec.get("name") or parsed.get("name") or ""
+        if not parsed.get("title"):
+            parsed["title"] = parsed["name"]
+        self._result_rec = parsed
+        empty = "No sampled curve in this result (plot template only)."
+        if result_has_curve(parsed) or result_has_grid(parsed):
+            empty = ""
+        self.result_plot.set_result(parsed, empty)
+        self._show_plot()
+        n = len(parsed.get("x") or [])
+        if n >= 2:
+            self.message_win.info(f"Result: {parsed['name']}  {n} samples")
+            self._status_mode.setText("1D Plot")
+        elif result_has_grid(parsed):
+            self.message_win.info(f"Result: {parsed['name']}  farfield grid")
+            self._status_mode.setText("Farfield")
+        else:
+            self.message_win.info(f"Result: {parsed['name']}  (template, no samples)")
+            self._status_mode.setText("Result")
+
+    def _show_result_kind(self, kind: str) -> None:
+        data = self._project_data or {}
+        bucket = {
+            "result_1d": data.get("results_1d") or [],
+            "result_2d": data.get("results_2d") or [],
+            "farfield": data.get("farfields") or [],
+        }.get(kind) or []
+        if not bucket:
+            self.result_plot.set_result({}, "No results in this project.")
+            self._show_plot()
+            self.message_win.info("No results of that type.")
+            return
+        self._open_result(bucket[0])
+
+    def _on_export_plot(self) -> None:
+        rec = self._result_rec or {}
+        if not result_has_curve(rec) and not result_has_grid(rec):
+            self.message_win.warn("Nothing to export — select a result with samples.")
+            return
+        path, filt = QFileDialog.getSaveFileName(
+            self, "Export result",
+            (rec.get("name") or "result") + ".csv",
+            "CSV (*.csv);;PNG (*.png)")
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".png") or "PNG" in (filt or ""):
+                if not path.lower().endswith(".png"):
+                    path += ".png"
+                self.result_plot.to_pixmap().save(path, "PNG")
+            else:
+                if not path.lower().endswith(".csv"):
+                    path += ".csv"
+                from cst_results import curve_to_csv
+                open(path, "w", encoding="utf-8").write(curve_to_csv(rec))
+            self.message_win.info(f"Exported {os.path.basename(path)}")
+        except Exception as exc:
+            self.message_win.error(f"Export failed: {exc}")
 
     def _on_about(self) -> None:
         QMessageBox.about(
@@ -2139,9 +2235,26 @@ class CSTMainWindow(QMainWindow):
             elif low.endswith(".sat"):
                 data["progress"].append((os.path.basename(n), "Imported SAT"))
             elif low.endswith(".r1d"):
-                data["results_1d"].append({"name": os.path.splitext(os.path.basename(n))[0]})
+                data["results_1d"].append({
+                    "name": os.path.splitext(os.path.basename(n))[0],
+                    "path": n, "format": "r1d",
+                })
             elif low.endswith(".r0d"):
-                data["results_2d"].append({"name": os.path.splitext(os.path.basename(n))[0]})
+                data["results_2d"].append({
+                    "name": os.path.splitext(os.path.basename(n))[0],
+                    "path": n, "format": "r0d",
+                })
+            elif low.endswith(".dat") and (
+                    "/result" in low or "farfield" in low or n.lower().count("farfield")):
+                data["farfields"].append({
+                    "name": os.path.splitext(os.path.basename(n))[0],
+                    "path": n, "format": "farfield",
+                })
+            elif low.endswith(".txt") and "/result" in low:
+                data["tables"].append({
+                    "name": os.path.splitext(os.path.basename(n))[0],
+                    "path": n, "format": "ascii",
+                })
 
         sab_comps = self._load_sab_components(cst_path, entries)
         if sab_comps:

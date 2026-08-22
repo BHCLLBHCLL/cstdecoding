@@ -295,6 +295,68 @@ def test_drawing_mode(viewer):
     assert viewer.viewport._parallel is True
 
 
+def test_result_plot_curve_and_empty(viewer):
+    import struct
+    from pathlib import Path
+
+    mini = (
+        "CST Farfield Format V1\n\nDimension = 2\nFrequency = 1e9\n"
+        "Type = BISTATICRCS\n\n"
+        "// = Theta Phi Re(E_Theta) Im(E_Theta) Re(E_Phi) Im(E_Phi)\n\n"
+        "0\t0\t3\t4\t0\t0\n10\t0\t0\t5\t0\t0\n20\t0\t8\t6\t0\t0\n"
+        "0\t90\t1\t0\t0\t0\n10\t90\t0\t1\t0\t0\n20\t90\t0\t0\t1\t0\n"
+    )
+
+    def pack_r1d(meta):
+        def s(text):
+            raw = (text or "").encode("latin-1") + b"\x00"
+            return struct.pack("<i", len(raw)) + raw
+        out = struct.pack("<ii", 3, 1) + s("2024|0|test") + s("2024|0|test")
+        out += struct.pack("<i", len(meta))
+        for k, v in meta.items():
+            out += s(k) + s(v)
+        out += struct.pack("<i", 0)
+        return out
+
+    viewer._archive = {}
+    viewer._open_result({
+        "name": "farfield_TOTAL1",
+        "path": "Result/farfield_TOTAL1.dat",
+        "bytes": mini.encode("ascii"),
+    })
+    assert viewer.result_plot.has_curve()
+    assert viewer._view_stack.currentWidget() is viewer.result_plot
+    assert len(viewer._result_rec.get("x") or []) >= 3
+    scratch = Path(__file__).resolve().parent / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    csv_path = scratch / "m8_curve.csv"
+    csv_path.write_text(viewer.result_plot.to_csv(), encoding="utf-8")
+    assert "10" in csv_path.read_text(encoding="utf-8")
+    png = viewer.result_plot.to_pixmap()
+    assert not png.isNull()
+    png_path = scratch / "m8_curve.png"
+    png.save(str(png_path), "PNG")
+    assert png_path.is_file() and png_path.stat().st_size > 20
+
+    viewer._open_result({
+        "name": "S1,1",
+        "bytes": pack_r1d({"TemplateType": "1D", "labletext": "S1,1"}),
+    })
+    assert not viewer.result_plot.has_curve()
+    viewer._show_result_kind("farfield")
+    assert viewer._view_stack.currentWidget() is viewer.result_plot
+    viewer._project_data = {
+        "farfields": [{
+            "name": "ff", "bytes": mini.encode("ascii"),
+        }],
+        "results_1d": [], "results_2d": [],
+    }
+    viewer._show_result_kind("farfield")
+    assert viewer.result_plot.has_curve()
+    viewer._show_viewport()
+    assert viewer._view_stack.currentWidget() is viewer.viewport
+
+
 PHONE_CST = r"D:\training\cst\CST Phone 5G.cst"
 
 

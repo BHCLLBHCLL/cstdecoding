@@ -654,7 +654,7 @@ def _chain_edges_by_geometry(edges: list, max_gap: float = 0.1):
         anchor_start = poly[0]
         found = False
         # Try to append to the end
-        for i in range(1, len(working)):
+        for i in range(len(working)):
             if used[i]:
                 continue
             e = working[i]
@@ -676,7 +676,7 @@ def _chain_edges_by_geometry(edges: list, max_gap: float = 0.1):
         closed_here = close(poly[0], poly[-1])
         if closed_here:
             break
-        for i in range(1, len(working)):
+        for i in range(len(working)):
             if used[i]:
                 continue
             e = working[i]
@@ -695,9 +695,24 @@ def _chain_edges_by_geometry(edges: list, max_gap: float = 0.1):
         else:
             # Cannot extend further; remaining edges may be disjoint holes or different loops
             break
-    # Close if endpoints close enough
+    # A leftover closer from poly[-1] back to poly[0] is still an unused edge.
+    if not close(poly[0], poly[-1]):
+        for i, e in enumerate(working):
+            if used[i]:
+                continue
+            if close(poly[-1], e[0]) and close(e[-1], poly[0]):
+                poly.extend(e[1:])
+                used[i] = True
+                break
+            if close(poly[-1], e[-1]) and close(e[0], poly[0]):
+                poly.extend(reversed(e[:-1]))
+                used[i] = True
+                break
+    # _dedup_poly drops a wrap-around last==first vertex; remember that
+    # as a true close so a U-notch is not discarded as an open path.
+    wrapped = len(poly) >= 4 and close(poly[0], poly[-1])
     poly = _dedup_poly(poly)
-    closed = len(poly) >= 3 and _loop_is_closed(poly)
+    closed = wrapped or (len(poly) >= 3 and _loop_is_closed(poly))
     return _strip_spikes(poly), closed
 
 
@@ -1468,30 +1483,48 @@ def _hulls_from_clusters(clusters, surf) -> list:
     return hulls
 
 
-def _hull_groups_from_edges(edges, surf, bridge: float = 12.0) -> list:
-    """Convex-hull each disconnected on-plane cluster; nest inner hulls as holes.
-
-    Leftover intcurve endpoint samples can chord between shield cans and
-    merge them into one wrap. If dropping those long chords yields two or
-    more substantial islands, tessellate the islands separately. A PCB
-    plate (long sides + tiny corner fillets) keeps the all-edge grouping
-    so the outer outline is not shattered.
-    """
+def _select_island_clusters(edges, surf, bridge: float = 12.0) -> list:
+    """Pick disconnected on-plane edge groups (cans vs one PCB plate)."""
     clusters = _cluster_edge_groups(edges)
-    hulls = _hulls_from_clusters(clusters, surf)
-    nested = _nest_hulls(hulls)
     short = [e for e in edges if len(e) >= 2 and _dist(e[0], e[-1]) <= bridge]
-    if len(short) >= 8:
-        short_hulls = _hulls_from_clusters(_cluster_edge_groups(short), surf)
-        substantial = [h for h in short_hulls if _abs_loop_area(h) > 3.0]
-        if len(substantial) >= 2:
-            wrap = max((_abs_loop_area(h) for h in hulls), default=0.0)
-            island_sum = sum(_abs_loop_area(h) for h in substantial)
-            # Cans: island areas fill a fair fraction of the chord-wrap.
-            # PCB corners: crumbs inside a much larger plate — keep the plate.
-            if wrap > 0 and island_sum >= 0.25 * wrap:
-                return _nest_hulls(substantial)
-    return nested
+    if len(short) < 8:
+        return clusters
+    short_clusters = _cluster_edge_groups(short)
+    substantial = []
+    for cl in short_clusters:
+        hulls = _hulls_from_clusters([cl], surf)
+        if hulls and _abs_loop_area(hulls[0]) > 3.0:
+            substantial.append(cl)
+    if len(substantial) < 2:
+        return clusters
+    wrap = max((_abs_loop_area(h) for h in _hulls_from_clusters(clusters, surf)),
+               default=0.0)
+    island_sum = 0.0
+    for cl in substantial:
+        hs = _hulls_from_clusters([cl], surf)
+        island_sum += _abs_loop_area(hs[0]) if hs else 0.0
+    if wrap > 0 and island_sum >= 0.25 * wrap:
+        return substantial
+    return clusters
+
+
+def _hull_groups_from_edges(edges, surf, bridge: float = 12.0) -> list:
+    """Closed outline per disconnected on-plane cluster; nest inner loops as holes.
+
+    Prefer a geometric chain (fillets / nubs stay on the CAD contour) over a
+    convex hull, which flattens rounded corners into a wrap. Long leftover
+    intcurve chords are dropped when they would merge shield-can islands.
+    """
+    clusters = _select_island_clusters(edges, surf, bridge)
+    groups = []
+    for cl in clusters:
+        loops = [lp for lp in _chain_plane_loops(cl)
+                 if len(lp) >= 3 and _abs_loop_area(lp) > 0.05]
+        if loops:
+            groups.extend(_nest_hulls(loops))
+        else:
+            groups.extend(_nest_hulls(_hulls_from_clusters([cl], surf)))
+    return groups
 
 
 def _tessellate_face(ents, base, face, end=None) -> list:
@@ -1589,6 +1622,15 @@ def _tessellate_face(ents, base, face, end=None) -> list:
         current_max_area = max((_area2_of(p) for p in polys), default=0.0)
         plane_cluster_tris = None
         groups = _hull_groups_from_edges(body_plane_edges, surf) if body_plane_edges else []
+        # Top-rim / lid face whose loop coedges use a variant layout: the
+        # pointer walk recovers nothing and the face's own coedges all resolve
+        # to edges on other planes (face_plane_edges empty).  The body-wide
+        # plane edges still trace the outline, so chain them directly to
+        # recover the face (e.g. sh_cans:top top-rim lid at z=-3.2775).
+        if not polys and not face_plane_edges and len(body_plane_edges) >= 8:
+            closed_loops = _chain_plane_loops(body_plane_edges)
+            if closed_loops and _abs_loop_area(closed_loops[0]) > 30.0:
+                polys = closed_loops
         if len(groups) >= 2:
             # Disjoint on-plane islands (shield-can lids): never triangulate
             # them as one outer-with-holes, which fills the PCB between cans.

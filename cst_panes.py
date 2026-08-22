@@ -14,7 +14,10 @@ from datetime import datetime
 from html import escape as _html_escape
 
 from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QIcon, QKeySequence, QLinearGradient, QPainter, QPen
+from PyQt5.QtGui import (
+    QColor, QFont, QIcon, QImage, QKeySequence, QLinearGradient, QPainter, QPen,
+    QPixmap,
+)
 from PyQt5.QtWidgets import (
     QAbstractItemView, QAction, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMenu, QProxyStyle, QStyle, QTableWidget, QTableWidgetItem,
@@ -355,6 +358,149 @@ class PropertyInspector(QWidget):
 
     def clear(self) -> None:
         self.show_item("", "Select a Navigation Tree item", None)
+
+
+class ResultPlot(QWidget):
+    """1D curve / 2D farfield heatmap. Empty when the result is a template."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rec: dict = {}
+        self._empty = "No result selected."
+        self.setMinimumSize(240, 160)
+        self.setAutoFillBackground(True)
+        pal = self.palette()
+        pal.setColor(self.backgroundRole(), QColor(250, 250, 248))
+        self.setPalette(pal)
+
+    def set_result(self, rec: dict | None, empty: str = "") -> None:
+        self._rec = rec or {}
+        self._empty = empty or "No sampled curve in this result."
+        self.update()
+
+    def has_curve(self) -> bool:
+        rec = self._rec
+        return bool(rec.get("x") and rec.get("y") and len(rec["x"]) >= 2)
+
+    def to_csv(self) -> str:
+        from cst_results import curve_to_csv
+        if not self.has_curve():
+            return ""
+        return curve_to_csv(self._rec)
+
+    def to_pixmap(self) -> QPixmap:
+        pm = QPixmap(max(self.width(), 640), max(self.height(), 360))
+        pm.fill(QColor(250, 250, 248))
+        p = QPainter(pm)
+        self._paint(p, pm.width(), pm.height())
+        p.end()
+        return pm
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(250, 250, 248))
+        self._paint(p, self.width(), self.height())
+
+    def _paint(self, p: QPainter, w: int, h: int) -> None:
+        rec = self._rec or {}
+        grid = rec.get("grid")
+        p.setFont(QFont("Segoe UI", 9))
+        p.setPen(QColor(40, 40, 40))
+        title = rec.get("title") or rec.get("name") or ""
+        if title:
+            p.drawText(12, 18, title)
+        if grid and grid[0]:
+            self._paint_grid(p, rec, w, h)
+            if self.has_curve():
+                self._paint_curve(p, rec, w, h, overlay=True)
+            return
+        if self.has_curve():
+            self._paint_curve(p, rec, w, h, overlay=False)
+            return
+        p.setPen(QColor(120, 120, 120))
+        p.drawText(12, h // 2, self._empty)
+
+    def _paint_curve(self, p, rec, w, h, overlay=False) -> None:
+        xs = [float(v) for v in rec["x"]]
+        ys = [float(v) for v in rec["y"]]
+        pad_l, pad_r, pad_t, pad_b = 48, 16, 28, 36
+        if overlay:
+            pad_t = int(h * 0.58)
+        plot_w = max(8, w - pad_l - pad_r)
+        plot_h = max(8, h - pad_t - pad_b)
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        if xmax <= xmin:
+            xmax = xmin + 1.0
+        if ymax <= ymin:
+            ymax = ymin + 1.0
+
+        def sx(x):
+            return pad_l + (x - xmin) / (xmax - xmin) * plot_w
+
+        def sy(y):
+            return pad_t + (1.0 - (y - ymin) / (ymax - ymin)) * plot_h
+
+        p.setPen(QPen(QColor(200, 200, 200), 1))
+        p.drawRect(pad_l, pad_t, plot_w, plot_h)
+        p.setPen(QPen(QColor(180, 50, 40), 2))
+        last = None
+        for x, y in zip(xs, ys):
+            pt = (int(sx(x)), int(sy(y)))
+            if last is not None:
+                p.drawLine(last[0], last[1], pt[0], pt[1])
+            last = pt
+        p.setPen(QColor(70, 70, 70))
+        p.setFont(QFont("Segoe UI", 8))
+        p.drawText(pad_l, h - 8, rec.get("xlabel") or "x")
+        p.drawText(8, pad_t + 12, rec.get("ylabel") or "y")
+        p.drawText(pad_l, h - 20, f"{xmin:g}")
+        p.drawText(w - pad_r - 64, h - 20, f"{xmax:g}")
+
+    def _paint_grid(self, p, rec, w, h) -> None:
+        grid = rec["grid"]
+        ny, nx = len(grid), len(grid[0])
+        pad_l, pad_r, pad_t, pad_b = 48, 16, 28, 36
+        if self.has_curve():
+            pad_b = int(h * 0.42)
+        pw, ph = max(4, w - pad_l - pad_r), max(4, h - pad_t - pad_b)
+        flat = [v for row in grid for v in row]
+        vmin, vmax = min(flat), max(flat)
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+        img = QImage(nx, ny, QImage.Format_RGB32)
+        for j, row in enumerate(grid):
+            for i, val in enumerate(row):
+                t = (val - vmin) / (vmax - vmin)
+                img.setPixelColor(i, j, _ramp_color(t))
+        scaled = img.scaled(pw, ph, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        p.drawImage(pad_l, pad_t, scaled)
+        p.setPen(QColor(70, 70, 70))
+        p.setFont(QFont("Segoe UI", 8))
+        p.drawText(pad_l, pad_t + ph + 14, "phi →")
+        p.drawText(8, pad_t + 12, "θ")
+        p.drawText(w - 80, pad_t + 12, f"{vmax:.3g}")
+        p.drawText(w - 80, pad_t + ph, f"{vmin:.3g}")
+
+
+def _ramp_color(t: float) -> QColor:
+    t = max(0.0, min(1.0, float(t)))
+    stops = (
+        (0.0, 20, 40, 120),
+        (0.35, 40, 160, 200),
+        (0.55, 80, 200, 80),
+        (0.75, 230, 210, 40),
+        (1.0, 200, 40, 30),
+    )
+    for i in range(1, len(stops)):
+        if t <= stops[i][0]:
+            t0, r0, g0, b0 = stops[i - 1]
+            t1, r1, g1, b1 = stops[i]
+            u = 0.0 if t1 <= t0 else (t - t0) / (t1 - t0)
+            return QColor(int(r0 + (r1 - r0) * u),
+                          int(g0 + (g1 - g0) * u),
+                          int(b0 + (b1 - b0) * u))
+    return QColor(200, 40, 30)
 
 
 class ParameterList(QWidget):
@@ -1100,7 +1246,16 @@ class NavigationTree(QWidget):
                     self._add_child(
                         item, obj.get("name", "?"), "wcs", obj, kind="wcs")
             elif data_type == "dict_list" and data:
-                child_kind = {"ports": "port"}.get(icon_key, icon_key)
+                child_kind = {
+                    "Ports": "port",
+                    "Field Monitors": "monitor",
+                    "Probes": "probe",
+                    "1D Results": "result_1d",
+                    "2D/3D Results": "result_2d",
+                    "Farfields": "farfield",
+                    "Tables": "table",
+                    "Lumped Elements": "lumped",
+                }.get(label, {"ports": "port"}.get(icon_key, icon_key))
                 for obj in data:
                     self._add_child(
                         item, obj.get("name", "?"), icon_key, obj,

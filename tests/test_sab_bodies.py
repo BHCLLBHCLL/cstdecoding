@@ -271,3 +271,30 @@ def test_disjoint_edge_clusters():
     mesh2 = {"points": [p for tri in tris2 for p in tri],
              "faces": [(3 * i, 3 * i + 1, 3 * i + 2) for i in range(len(tris2))]}
     assert not _mesh_covers(mesh2, mid)
+
+
+def test_notched_island_keeps_opening():
+    """Chained can outlines must keep concave notches (convex hull would fill)."""
+    from sab_bodies import _hull_groups_from_edges, _triangulate_plane
+    # U-shape opening to +x: the bay at (7, 3) is empty only if we chain.
+    edges = [
+        [(0.0, 0.0, 0.0), (8.0, 0.0, 0.0)],
+        [(8.0, 0.0, 0.0), (8.0, 2.0, 0.0)],
+        [(8.0, 2.0, 0.0), (3.0, 2.0, 0.0)],
+        [(3.0, 2.0, 0.0), (3.0, 4.0, 0.0)],
+        [(3.0, 4.0, 0.0), (8.0, 4.0, 0.0)],
+        [(8.0, 4.0, 0.0), (8.0, 6.0, 0.0)],
+        [(8.0, 6.0, 0.0), (0.0, 6.0, 0.0)],
+        [(0.0, 6.0, 0.0), (0.0, 0.0, 0.0)],
+    ]
+    surf = {"type": "plane", "fields": [
+        ("pos", (0.0, 0.0, 0.0)), ("vec", (0.0, 0.0, 1.0)), ("vec", (1.0, 0.0, 0.0)),
+    ]}
+    groups = _hull_groups_from_edges(edges, surf)
+    assert len(groups) == 1
+    tris = _triangulate_plane(groups[0])
+    mesh = {"points": [p for tri in tris for p in tri],
+            "faces": [(3 * i, 3 * i + 1, 3 * i + 2) for i in range(len(tris))]}
+    assert not _mesh_covers(mesh, (6.0, 3.0, 0.0))
+    assert _mesh_covers(mesh, (1.5, 3.0, 0.0))
+    assert _mesh_covers(mesh, (6.0, 0.8, 0.0))
