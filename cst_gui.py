@@ -33,16 +33,19 @@ from cst_project import (
     append_component_new, append_group_item, append_history,
     append_solid_delete, append_solid_rename, archive_get, boolean_vba,
     bounds_center, box_mesh, brick_vba, cone_mesh, cone_vba, cylinder_mesh,
-    cylinder_vba, eval_expr, intersect_bounds, material_vba, merge_meshes,
-    mesh_bounds, mirror_fn, parse_hidden_solids, resolve_parameters,
-    rotate_fn, scale_fn, snapshot_state, sphere_mesh, sphere_vba, torus_mesh,
-    torus_vba, transform_component, transform_mirror_vba, transform_rotate_vba,
+    cylinder_vba, discrete_port_vba, eval_expr, eval_excitations, eval_point,
+    intersect_bounds, material_vba, merge_meshes, mesh_bounds,
+    mirror_fn, monitor_vba, next_port_number, parse_hidden_solids,
+    parse_set_point, probe_vba, resolve_parameters, rotate_fn, scale_fn,
+    snapshot_state, sphere_mesh, sphere_vba, torus_mesh, torus_vba,
+    transform_component, transform_mirror_vba, transform_rotate_vba,
     transform_scale_vba, transform_translate_vba, translate_fn, union_bounds,
-    unique_solid_name, write_hidden, write_parameters,
+    unique_solid_name, waveguide_port_vba, write_hidden, write_parameters,
 )
 from cst_dialogs import (
-    boolean_dialog, component_dialog, material_dialog, shape_dialog,
-    transform_dialog,
+    boolean_dialog, component_dialog, discrete_port_dialog, material_dialog,
+    monitor_dialog, probe_dialog, shape_dialog, transform_dialog,
+    waveguide_port_dialog,
 )
 from cst_icons import AppIcons
 from cst_panes import (
@@ -324,8 +327,8 @@ class CSTMainWindow(QMainWindow):
         ]))
         # Discrete / Waveguide ports live under simulation but are modeled here
         layout.addWidget(self._make_ribbon_group("Ports", [
-            ("Discrete", "ports", self._nyi_slot("Discrete Port")),
-            ("Waveguide", "ports", self._nyi_slot("Waveguide Port")),
+            ("Discrete", "ports", lambda: self._on_discrete_port()),
+            ("Waveguide", "ports", lambda: self._on_waveguide_port()),
         ]))
         layout.addStretch(1)
         return w
@@ -347,8 +350,8 @@ class CSTMainWindow(QMainWindow):
             ("Farfield\nSource", "farfield", self._nyi_slot("Farfield Source")),
         ]))
         layout.addWidget(self._make_ribbon_group("Monitors", [
-            ("Field", "monitor", self._nyi_slot("Field Monitor")),
-            ("Probe", "probe", self._nyi_slot("Field Probe")),
+            ("Field", "monitor", lambda: self._on_field_monitor()),
+            ("Probe", "probe", lambda: self._on_probe()),
             ("S-Parameters", "1d", self._nyi_slot("S-Parameters")),
         ]))
         layout.addWidget(self._make_ribbon_group("Run", [
@@ -1129,6 +1132,195 @@ class CSTMainWindow(QMainWindow):
         self._mutate(f"new component {name}", apply)
         self.message_win.info(f"Component {name}")
 
+    def _on_discrete_port(self) -> None:
+        n = next_port_number((self._project_data or {}).get("ports") or [])
+        data = discrete_port_dialog(self, {"port_number": str(n)})
+        if data:
+            self._add_discrete_port(data)
+
+    def _add_discrete_port(self, data: dict) -> None:
+        ports = (self._project_data or {}).setdefault("ports", [])
+        num = int(data.get("port_number") or next_port_number(ports))
+        label = data.get("label") or ""
+        name = label or f"port{num}"
+        p1 = (data.get("x1", "0"), data.get("y1", "0"), data.get("z1", "0"))
+        p2 = (data.get("x2", "0"), data.get("y2", "0"), data.get("z2", "1"))
+        impedance = data.get("impedance") or "50.0"
+        ptype = data.get("ptype") or "SParameter"
+        params = (self._project_data or {}).get("parameters") or []
+        rec = {
+            "name": name,
+            "port_number": num,
+            "impedance": impedance,
+            "type": ptype,
+            "kind": "Discrete",
+            "label": label,
+            "p1": p1,
+            "p2": p2,
+            "p1_xyz": eval_point(p1, params),
+            "p2_xyz": eval_point(p2, params),
+        }
+        vba = discrete_port_vba(num, impedance, p1, p2, label, ptype)
+
+        def apply():
+            ports.append(rec)
+            append_history(self._archive, f"define discrete port: {num}", vba)
+            eval_excitations(self._project_data)
+            self._refresh_geometry()
+
+        self._mutate(f"discrete port {num}", apply)
+        self.message_win.info(f"Discrete port {num}  Z={impedance}")
+
+    def _on_waveguide_port(self) -> None:
+        n = next_port_number((self._project_data or {}).get("ports") or [])
+        data = waveguide_port_dialog(self, {"port_number": str(n)})
+        if data:
+            self._add_waveguide_port(data)
+
+    def _add_waveguide_port(self, data: dict) -> None:
+        ports = (self._project_data or {}).setdefault("ports", [])
+        num = int(data.get("port_number") or next_port_number(ports))
+        label = data.get("label") or ""
+        ori = data.get("orientation") or "zmin"
+        xr = (data.get("xmin", "-10"), data.get("xmax", "10"))
+        yr = (data.get("ymin", "-5"), data.get("ymax", "5"))
+        zr = (data.get("zmin", "0"), data.get("zmax", "0"))
+        rec = {
+            "name": label or f"port{num}",
+            "port_number": num,
+            "impedance": "50",
+            "type": "Waveguide",
+            "kind": "Waveguide",
+            "orientation": ori,
+            "xrange": xr,
+            "yrange": yr,
+            "zrange": zr,
+        }
+        vba = waveguide_port_vba(num, ori, xr, yr, zr, label)
+
+        def apply():
+            ports.append(rec)
+            append_history(self._archive, f"define waveguide port: {num}", vba)
+            eval_excitations(self._project_data)
+            self._refresh_geometry()
+
+        self._mutate(f"waveguide port {num}", apply)
+        self.message_win.info(f"Waveguide port {num} ({ori})")
+
+    def _on_field_monitor(self) -> None:
+        data = monitor_dialog(self)
+        if data:
+            self._add_monitor(data)
+
+    def _add_monitor(self, data: dict) -> None:
+        ft = data.get("field_type") or "Efield"
+        freq = data.get("frequency") or "2.45"
+        name = data.get("name") or f"{ft.lower()} (f={freq})"
+        rec = {
+            "name": name,
+            "field_type": ft,
+            "frequency": freq,
+            "domain": data.get("domain") or "Frequency",
+            "dimension": data.get("dimension") or "Volume",
+        }
+        vba = monitor_vba(name, ft, freq, rec["domain"], rec["dimension"])
+
+        def apply():
+            self._project_data.setdefault("monitors", []).append(rec)
+            cap = "farfield" if ft.lower() == "farfield" else "monitor"
+            append_history(self._archive, f"define {cap}: {name}", vba)
+            self._refresh_geometry()
+
+        self._mutate(f"monitor {name}", apply)
+        self.message_win.info(f"Monitor {name}")
+
+    def _on_probe(self) -> None:
+        data = probe_dialog(self)
+        if data:
+            self._add_probe(data)
+
+    def _add_probe(self, data: dict) -> None:
+        name = data.get("name") or "probe1"
+        field = data.get("field_name") or "efield"
+        x, y, z = data.get("x", "0"), data.get("y", "0"), data.get("z", "0")
+        ori = data.get("orientation") or "X"
+        params = (self._project_data or {}).get("parameters") or []
+        rec = {
+            "name": name,
+            "field_type": field,
+            "x": x, "y": y, "z": z,
+            "orientation": ori,
+            "p1": (x, y, z),
+            "xyz": eval_point((x, y, z), params),
+        }
+        vba = probe_vba(name, field, x, y, z, ori)
+
+        def apply():
+            self._project_data.setdefault("probes", []).append(rec)
+            append_history(self._archive, f"define probe: {name}", vba)
+            eval_excitations(self._project_data)
+            self._refresh_geometry()
+
+        self._mutate(f"probe {name}", apply)
+        self.message_win.info(f"Probe {name}")
+
+    def _find_named(self, collection: str, name: str):
+        for rec in (self._project_data or {}).get(collection) or []:
+            if rec.get("name") == name:
+                return rec
+        return None
+
+    def _port_vba(self, rec: dict) -> str:
+        n = rec.get("port_number")
+        if rec.get("kind") == "Waveguide" or rec.get("type") == "Waveguide":
+            return waveguide_port_vba(
+                n, rec.get("orientation") or "zmin",
+                rec.get("xrange") or ("-10", "10"),
+                rec.get("yrange") or ("-5", "5"),
+                rec.get("zrange") or ("0", "0"),
+                rec.get("label") or "")
+        ptype = rec.get("type") or "SParameter"
+        if ptype not in ("SParameter", "Voltage", "Current"):
+            ptype = "SParameter"
+        return discrete_port_vba(
+            n, rec.get("impedance") or "50.0",
+            rec.get("p1") or ("0", "0", "0"),
+            rec.get("p2") or ("0", "0", "1"),
+            rec.get("label") or "", ptype)
+
+    def _monitor_vba(self, rec: dict) -> str:
+        return monitor_vba(
+            rec.get("name") or "monitor",
+            rec.get("field_type") or "Efield",
+            rec.get("frequency") or "2.45",
+            rec.get("domain") or "Frequency",
+            rec.get("dimension") or "Volume")
+
+    def _probe_vba(self, rec: dict) -> str:
+        return probe_vba(
+            rec.get("name") or "probe1",
+            rec.get("field_type") or rec.get("field_name") or "efield",
+            rec.get("x", "0"), rec.get("y", "0"), rec.get("z", "0"),
+            rec.get("orientation") or "X")
+
+    def _rewrite_excitation_history(self, coll: str, rec: dict,
+                                    old_name: str | None = None) -> None:
+        if coll == "ports":
+            n = rec.get("port_number")
+            append_history(
+                self._archive, f"define port: {n}",
+                f'Port.Delete "{n}"\n' + self._port_vba(rec))
+        elif coll == "monitors":
+            old = old_name or rec.get("name") or ""
+            append_history(
+                self._archive, f"define monitor: {rec.get('name')}",
+                f'Monitor.Delete "{old}"\n' + self._monitor_vba(rec))
+        elif coll == "probes":
+            old = old_name or rec.get("name") or ""
+            append_history(
+                self._archive, f"define probe: {rec.get('name')}",
+                f'Probe.Delete "{old}"\n' + self._probe_vba(rec))
+
     def _component_folders(self) -> list:
         seen, folders = set(), []
         for name in (self._project_data or {}).get("empty_components") or []:
@@ -1180,6 +1372,15 @@ class CSTMainWindow(QMainWindow):
         names = [n for n in (name or "").split("\n") if n]
         if not names:
             return
+        if kind in ("port", "ports"):
+            self._delete_named("ports", names, "Port.Delete")
+            return
+        if kind == "monitor":
+            self._delete_named("monitors", names, "Monitor.Delete")
+            return
+        if kind == "probe":
+            self._delete_named("probes", names, "Probe.Delete")
+            return
         comps = (self._project_data or {}).get("components") or []
         folder = names[0] if len(names) == 1 else None
         if kind in ("collection", "folder") and folder and not any(
@@ -1214,6 +1415,27 @@ class CSTMainWindow(QMainWindow):
         self.message_win.info(
             "Deleted " + (", ".join(n.split(":")[-1] for n in names[:6]))
             + ("…" if len(names) > 6 else ""))
+
+    def _delete_named(self, collection: str, names: list, vba_cmd: str) -> None:
+        items = (self._project_data or {}).get(collection) or []
+        remain = [x for x in items if x.get("name") not in names]
+        if len(remain) == len(items):
+            self.message_win.warn(f"Nothing to delete in {collection}.")
+            return
+
+        def apply():
+            self._project_data[collection] = remain
+            for n in names:
+                rec = next((x for x in items if x.get("name") == n), None)
+                arg = n
+                if rec and rec.get("port_number") is not None and "Port" in vba_cmd:
+                    arg = str(rec["port_number"])
+                append_history(self._archive, f"delete {collection[:-1]}: {n}",
+                               f'{vba_cmd} "{arg}"\n')
+            self._refresh_geometry()
+
+        self._mutate(f"delete {names[0]}", apply)
+        self.message_win.info("Deleted " + ", ".join(names[:6]))
 
     def _nav_rename(self, kind: str, name: str) -> None:
         if "\n" not in (name or ""):
@@ -1254,6 +1476,34 @@ class CSTMainWindow(QMainWindow):
                 for comp in comps:
                     if comp.get("material") == old:
                         comp["material"] = new
+            elif kind in ("port", "ports"):
+                rec = None
+                for item in (self._project_data or {}).get("ports") or []:
+                    if item.get("name") == old:
+                        item["name"] = new
+                        item["label"] = new
+                        rec = item
+                        break
+                if rec is not None:
+                    self._rewrite_excitation_history("ports", rec, old_name=old)
+            elif kind == "monitor":
+                rec = None
+                for item in (self._project_data or {}).get("monitors") or []:
+                    if item.get("name") == old:
+                        item["name"] = new
+                        rec = item
+                        break
+                if rec is not None:
+                    self._rewrite_excitation_history("monitors", rec, old_name=old)
+            elif kind == "probe":
+                rec = None
+                for item in (self._project_data or {}).get("probes") or []:
+                    if item.get("name") == old:
+                        item["name"] = new
+                        rec = item
+                        break
+                if rec is not None:
+                    self._rewrite_excitation_history("probes", rec, old_name=old)
             if kind == "solid":
                 append_solid_rename(self._archive, old, new)
                 if self._selected_solid == old:
@@ -1452,6 +1702,46 @@ class CSTMainWindow(QMainWindow):
                 self._refresh_geometry()
 
             self._mutate(f"material {value}", apply)
+            return
+        coll = {"port": "ports", "ports": "ports", "monitor": "monitors",
+                "probe": "probes"}.get(kind)
+        if coll:
+            rec = self._find_named(coll, name)
+            if rec is None:
+                return
+            if field == "name" and value == name:
+                return
+            if field == "impedance" and str(rec.get("impedance") or "") == value:
+                return
+            pmap = {"x1": 0, "y1": 1, "z1": 2, "x2": 0, "y2": 1, "z2": 2}
+
+            def apply():
+                old_name = rec.get("name")
+                if coll == "ports" and field in pmap:
+                    p1 = list(rec.get("p1") or ("0", "0", "0"))
+                    p2 = list(rec.get("p2") or ("0", "0", "0"))
+                    idx = pmap[field]
+                    if field in ("x1", "y1", "z1"):
+                        p1[idx] = value
+                    else:
+                        p2[idx] = value
+                    rec["p1"], rec["p2"] = tuple(p1), tuple(p2)
+                elif coll == "probes" and field in ("x", "y", "z"):
+                    rec[field] = value
+                    rec["p1"] = (rec.get("x", "0"), rec.get("y", "0"),
+                                 rec.get("z", "0"))
+                elif field == "name":
+                    rec["name"] = value
+                    if coll == "ports":
+                        rec["label"] = value
+                else:
+                    rec[field] = value
+                eval_excitations(self._project_data)
+                self._rewrite_excitation_history(coll, rec, old_name=old_name)
+                self._refresh_geometry()
+
+            self._mutate(f"edit {name} {field}", apply)
+            return
 
     # ------------------------------------------------------------------ file
 
@@ -1531,7 +1821,9 @@ class CSTMainWindow(QMainWindow):
                 self._project_data = {}
             self._project_data["parameters"] = resolved
             write_parameters(self._archive, resolved)
+            eval_excitations(self._project_data)
             self.param_list.set_parameters(resolved)
+            self._refresh_geometry()
         self._mutate("edit parameters", apply)
 
     def _confirm_discard(self) -> bool:
@@ -1852,6 +2144,7 @@ class CSTMainWindow(QMainWindow):
             f"{len(data['components'])} components, "
             f"{len(data['materials'])} materials, "
             f"{len(data['ports'])} ports")
+        eval_excitations(data)
         return data
 
     def _load_sab_components(self, cst_path, entries) -> list:
@@ -2191,78 +2484,94 @@ class CSTMainWindow(QMainWindow):
         # Do not stamp the field-monitor subvolume onto every solid — that is
         # what collapsed phone.cst into a single overlapping box.
 
-        for block in re.findall(r"With DiscretePort\s+(.*?)End With", text, re.S):
-            pnum_m = re.search(r'\.PortNumber\s+"(\d+)"', block)
-            imp_m = re.search(r'\.Impedance\s+"([^"]+)"', block)
-            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
-            pnum = pnum_m.group(1) if pnum_m else "?"
-            result["ports"].append({
-                "name": name_m.group(1) if name_m else f"Port {pnum}",
-                "port_number": int(pnum) if pnum.isdigit() else len(result["ports"]) + 1,
-                "impedance": imp_m.group(1) if imp_m else "50",
-                "type": "Discrete",
-            })
-        for i, block in enumerate(
-                re.findall(r"With DiscreteFacePort\s+(.*?)End With", text, re.S)):
-            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
-            label_m = re.search(r'\.Label\s+"([^"]+)"', block)
-            pnum_m = re.search(r'\.PortNumber\s+"(\d+)"', block)
-            type_m = re.search(r'\.Type\s+"([^"]+)"', block)
-            face_m = re.search(r'\.FaceType\s+"([^"]+)"', block)
-            pnum = int(pnum_m.group(1)) if pnum_m else len(result["ports"]) + 1
-            result["ports"].append({
-                "name": name_m.group(1) if name_m else (
-                    label_m.group(1) if label_m else f"FacePort_{i}"),
-                "port_number": pnum,
-                "impedance": "50",
-                "type": f"Face {type_m.group(1) if type_m else 'SParameter'}"
-                        f" ({face_m.group(1) if face_m else 'Linear'})",
-            })
-        for block in re.findall(r"With WaveguidePort\s+(.*?)End With", text, re.S):
-            pnum_m = re.search(r'\.PortNumber\s+"(\d+)"', block)
-            imp_m = re.search(r'\.Impedance\s+"([^"]+)"', block)
-            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
-            pnum = pnum_m.group(1) if pnum_m else "?"
-            result["ports"].append({
-                "name": name_m.group(1) if name_m else f"Waveguide {pnum}",
-                "port_number": int(pnum) if pnum.isdigit() else len(result["ports"]) + 1,
-                "impedance": imp_m.group(1) if imp_m else "50",
-                "type": "Waveguide",
-            })
+        # Ports / monitors / probes are sequential: Create then Delete then
+        # recreate must leave the last live object (property edits rewrite this way).
+        events = []
+        def _mark(kind, pattern):
+            for m in re.finditer(pattern, text, re.S):
+                events.append((m.start(), kind, m))
 
-        def _monitors(pattern, default_type, default_name):
-            for i, block in enumerate(re.findall(pattern, text, re.S)):
-                ft_m = re.search(r'\.FieldType\s+"([^"]+)"', block)
-                name_m = re.search(r'\.Name\s+"([^"]+)"', block)
-                fv_m = re.search(r'\.MonitorValue\s+"([^"]+)"', block)
-                ft = ft_m.group(1) if ft_m else default_type
-                mname = name_m.group(1) if name_m else f"{default_name}_{i}"
-                if fv_m and fv_m.group(1) not in mname:
-                    mname = f"{mname} (f={fv_m.group(1)})"
-                result["monitors"].append({"name": mname, "field_type": ft})
+        _mark("discrete", r"With DiscretePort\s+(.*?)End With")
+        _mark("face", r"With DiscreteFacePort\s+(.*?)End With")
+        _mark("waveguide", r"With WaveguidePort\s+(.*?)End With")
+        _mark("port", r"With Port\s+(.*?)End With")
+        _mark("pdel", r'Port\.Delete\s+"([^"]+)"')
+        _mark("monitor", r"With Monitor\s+(.*?)End With")
+        _mark("fieldmon", r"With FieldMonitor\s+(.*?)End With")
+        _mark("sparam", r"With SParameterMonitor\s+(.*?)End With")
+        _mark("voltage", r"With VoltageMonitor\s+(.*?)End With")
+        _mark("mdel", r'Monitor\.Delete\s+"([^"]+)"')
+        _mark("probe", r"With Probe\s+(.*?)End With")
+        _mark("prdel", r'Probe\.Delete\s+"([^"]+)"')
+        events.sort(key=lambda t: t[0])
 
-        _monitors(r"With Monitor\s+(.*?)End With", "?", "Monitor")
-        _monitors(r"With FieldMonitor\s+(.*?)End With", "?", "FieldMonitor")
-        for i, block in enumerate(
-                re.findall(r"With SParameterMonitor\s+(.*?)End With", text, re.S)):
-            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
-            result["monitors"].append({
-                "name": name_m.group(1) if name_m else f"SParam_{i}",
-                "field_type": "S-Parameters",
-            })
-        for i, block in enumerate(
-                re.findall(r"With VoltageMonitor\s+(.*?)End With", text, re.S)):
-            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
-            result["monitors"].append({
-                "name": name_m.group(1) if name_m else f"Voltage_{i}",
-                "field_type": "Voltage",
-            })
+        def _upsert(lst, rec, key):
+            k = rec.get(key)
+            for i, old in enumerate(lst):
+                if old.get(key) == k:
+                    lst[i] = rec
+                    return
+            lst.append(rec)
+
+        def _drop(lst, pred):
+            lst[:] = [x for x in lst if not pred(x)]
+
+        for _pos, kind, m in events:
+            if kind == "discrete":
+                _upsert(result["ports"], self._parse_discrete_port_block(m.group(1)),
+                        "port_number")
+            elif kind == "face":
+                result["ports"].append(self._parse_face_port_block(
+                    m.group(1), len(result["ports"])))
+            elif kind == "waveguide":
+                _upsert(result["ports"],
+                        self._parse_waveguide_block(m.group(1), result),
+                        "port_number")
+            elif kind == "port":
+                block = m.group(1)
+                if re.search(r'\.Orientation\s+"', block) or re.search(
+                        r'\.NumberOfModes\s+"', block):
+                    _upsert(result["ports"],
+                            self._parse_waveguide_block(block, result),
+                            "port_number")
+            elif kind == "pdel":
+                arg = m.group(1)
+                _drop(result["ports"],
+                      lambda p, a=arg: str(p.get("port_number")) == a
+                      or p.get("name") == a)
+            elif kind in ("monitor", "fieldmon"):
+                rec = self._parse_monitor_block(m.group(1), kind)
+                if rec:
+                    _upsert(result["monitors"], rec, "name")
+            elif kind == "sparam":
+                name_m = re.search(r'\.Name\s+"([^"]+)"', m.group(1))
+                rec = {
+                    "name": name_m.group(1) if name_m else "SParam",
+                    "field_type": "S-Parameters",
+                }
+                _upsert(result["monitors"], rec, "name")
+            elif kind == "voltage":
+                name_m = re.search(r'\.Name\s+"([^"]+)"', m.group(1))
+                rec = {
+                    "name": name_m.group(1) if name_m else "Voltage",
+                    "field_type": "Voltage",
+                }
+                _upsert(result["monitors"], rec, "name")
+            elif kind == "mdel":
+                arg = m.group(1)
+                _drop(result["monitors"], lambda x, a=arg: x.get("name") == a)
+            elif kind == "probe":
+                rec = self._parse_probe_block(m.group(1))
+                if rec:
+                    _upsert(result["probes"], rec, "name")
+            elif kind == "prdel":
+                arg = m.group(1)
+                _drop(result["probes"], lambda x, a=arg: x.get("name") == a)
 
         for kind, pattern, dest in (
                 ("faces", r"With Face\s+(.*?)End With", "faces"),
                 ("curves", r"With Curve\s+(.*?)End With", "curves"),
                 ("wcs", r"With WCS\s+(.*?)End With", "wcs"),
-                ("probes", r"With Probe\s+(.*?)End With", "probes"),
                 ("lumped", r"With LumpedElement\s+(.*?)End With", "lumped"),
         ):
             for block in re.findall(pattern, text, re.S):
@@ -2273,6 +2582,111 @@ class CSTMainWindow(QMainWindow):
             if not any(w["name"] == ws_name for w in result["wcs"]):
                 result["wcs"].append({"name": ws_name})
         return result
+
+    def _parse_discrete_port_block(self, block: str) -> dict:
+        pnum_m = re.search(r'\.PortNumber\s+"(\d+)"', block)
+        imp_m = re.search(r'\.Impedance\s+"([^"]+)"', block)
+        name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+        label_m = re.search(r'\.Label\s+"([^"]+)"', block)
+        type_m = re.search(r'\.Type\s+"([^"]+)"', block)
+        p1 = parse_set_point(block, "SetP1")
+        p2 = parse_set_point(block, "SetP2")
+        pnum = pnum_m.group(1) if pnum_m else "1"
+        label = (label_m.group(1) if label_m else "") or ""
+        return {
+            "name": (name_m.group(1) if name_m else "") or label or f"port{pnum}",
+            "port_number": int(pnum) if pnum.isdigit() else 1,
+            "impedance": imp_m.group(1) if imp_m else "50",
+            "type": type_m.group(1) if type_m else "Discrete",
+            "kind": "Discrete",
+            "label": label,
+            "p1": p1,
+            "p2": p2,
+        }
+
+    def _parse_face_port_block(self, block: str, index: int) -> dict:
+        name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+        label_m = re.search(r'\.Label\s+"([^"]+)"', block)
+        pnum_m = re.search(r'\.PortNumber\s+"(\d+)"', block)
+        type_m = re.search(r'\.Type\s+"([^"]+)"', block)
+        face_m = re.search(r'\.FaceType\s+"([^"]+)"', block)
+        pnum = int(pnum_m.group(1)) if pnum_m else index + 1
+        return {
+            "name": name_m.group(1) if name_m else (
+                label_m.group(1) if label_m else f"FacePort_{index}"),
+            "port_number": pnum,
+            "impedance": "50",
+            "type": f"Face {type_m.group(1) if type_m else 'SParameter'}"
+                    f" ({face_m.group(1) if face_m else 'Linear'})",
+            "kind": "Face",
+        }
+
+    def _parse_monitor_block(self, block: str, kind: str) -> dict | None:
+        ft_m = re.search(r'\.FieldType\s+"([^"]+)"', block)
+        name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+        fv_m = re.search(r'\.MonitorValue\s+"([^"]+)"', block)
+        dim_m = re.search(r'\.Dimension\s+"([^"]+)"', block)
+        dom_m = re.search(r'\.Domain\s+"([^"]+)"', block)
+        default = "FieldMonitor" if kind == "fieldmon" else "Monitor"
+        mname = name_m.group(1) if name_m else default
+        return {
+            "name": mname,
+            "field_type": ft_m.group(1) if ft_m else "?",
+            "frequency": fv_m.group(1) if fv_m else "",
+            "domain": dom_m.group(1) if dom_m else "Frequency",
+            "dimension": dim_m.group(1) if dim_m else "Volume",
+        }
+
+    def _parse_probe_block(self, block: str) -> dict | None:
+        name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+        loc = re.search(
+            r'\.Location\s+"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"', block)
+        pos = parse_set_point(block, "SetPosition1")
+        if pos is None:
+            pos = parse_set_point(block, "SetPosition")
+        if pos is None and loc:
+            pos = (loc.group(1), loc.group(2), loc.group(3))
+        field = (re.search(r'\.FieldName\s+"([^"]+)"', block)
+                 or re.search(r'\.FieldType\s+"([^"]+)"', block)
+                 or re.search(r'\.Field\s+"([^"]+)"', block))
+        ori = re.search(r'\.Orientation\s+"([^"]+)"', block)
+        rec = {
+            "name": name_m.group(1) if name_m else "probe",
+            "field_type": field.group(1) if field else "efield",
+            "orientation": ori.group(1) if ori else "X",
+        }
+        if pos:
+            rec["x"], rec["y"], rec["z"] = pos
+            rec["p1"] = pos
+        return rec
+
+    def _parse_waveguide_block(self, block: str, result: dict) -> dict:
+        pnum_m = re.search(r'\.PortNumber\s+"(\d+)"', block)
+        imp_m = re.search(r'\.Impedance\s+"([^"]+)"', block)
+        name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+        label_m = re.search(r'\.Label\s+"([^"]+)"', block)
+        ori_m = re.search(r'\.Orientation\s+"([^"]+)"', block)
+        xr = re.search(r'\.Xrange\s+"([^"]*)"\s*,\s*"([^"]*)"', block)
+        yr = re.search(r'\.Yrange\s+"([^"]*)"\s*,\s*"([^"]*)"', block)
+        zr = re.search(r'\.Zrange\s+"([^"]*)"\s*,\s*"([^"]*)"', block)
+        pnum = pnum_m.group(1) if pnum_m else str(len(result["ports"]) + 1)
+        rec = {
+            "name": (name_m.group(1) if name_m else "")
+                    or (label_m.group(1) if label_m else "")
+                    or f"port{pnum}",
+            "port_number": int(pnum) if pnum.isdigit() else len(result["ports"]) + 1,
+            "impedance": imp_m.group(1) if imp_m else "50",
+            "type": "Waveguide",
+            "kind": "Waveguide",
+            "orientation": ori_m.group(1) if ori_m else "",
+        }
+        if xr:
+            rec["xrange"] = (xr.group(1), xr.group(2))
+        if yr:
+            rec["yrange"] = (yr.group(1), yr.group(2))
+        if zr:
+            rec["zrange"] = (zr.group(1), zr.group(2))
+        return rec
 
 
 def main():

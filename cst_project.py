@@ -796,6 +796,158 @@ def material_vba(name, epsilon="1.0", mu="1.0", kappa="0.0", tand="0.0",
     )
 
 
+def discrete_port_vba(port_number, impedance, p1, p2, label="",
+                      ptype="SParameter", monitor="True") -> str:
+    x1, y1, z1 = p1
+    x2, y2, z2 = p2
+    return (
+        "With DiscretePort\n"
+        "     .Reset\n"
+        f'     .PortNumber "{port_number}"\n'
+        f'     .Type "{ptype}"\n'
+        f'     .Label "{label}"\n'
+        '     .Folder ""\n'
+        f'     .Impedance "{impedance}"\n'
+        '     .Voltage "1.0"\n'
+        '     .Current "1.0"\n'
+        f'     .Monitor "{monitor}"\n'
+        '     .Radius "0.0"\n'
+        f'     .SetP1 "False", "{x1}", "{y1}", "{z1}"\n'
+        f'     .SetP2 "False", "{x2}", "{y2}", "{z2}"\n'
+        '     .InvertDirection "False"\n'
+        '     .LocalCoordinates "False"\n'
+        '     .Wire ""\n'
+        '     .Position "end1"\n'
+        "     .Create\n"
+        "End With\n"
+    )
+
+
+def waveguide_port_vba(port_number, orientation, xr, yr, zr, label="") -> str:
+    return (
+        "With Port\n"
+        "     .Reset\n"
+        f'     .PortNumber "{port_number}"\n'
+        f'     .Label "{label}"\n'
+        '     .Folder ""\n'
+        '     .NumberOfModes "1"\n'
+        '     .AdjustPolarization "False"\n'
+        '     .PolarizationAngle "0.0"\n'
+        '     .ReferencePlaneDistance "0"\n'
+        '     .Coordinates "Full"\n'
+        f'     .Orientation "{orientation}"\n'
+        '     .PortOnBound "True"\n'
+        '     .ClipPickedPortToBound "False"\n'
+        f'     .Xrange "{xr[0]}", "{xr[1]}"\n'
+        f'     .Yrange "{yr[0]}", "{yr[1]}"\n'
+        f'     .Zrange "{zr[0]}", "{zr[1]}"\n'
+        '     .SingleEnded "False"\n'
+        '     .WaveguideMonitor "False"\n'
+        "     .Create\n"
+        "End With\n"
+    )
+
+
+def monitor_vba(name, field_type="Efield", frequency="2.45",
+                domain="Frequency", dimension="Volume") -> str:
+    extra = ""
+    if str(field_type).lower() == "farfield":
+        extra = (
+            '     .ExportFarfieldSource "False"\n'
+            '     .EnableNearfieldCalculation "True"\n'
+        )
+    return (
+        "With Monitor\n"
+        "     .Reset\n"
+        f'     .Name "{name}"\n'
+        f'     .Dimension "{dimension}"\n'
+        f'     .Domain "{domain}"\n'
+        f'     .FieldType "{field_type}"\n'
+        f'     .MonitorValue "{frequency}"\n'
+        '     .UseSubvolume "False"\n'
+        '     .Coordinates "Structure"\n'
+        f"{extra}"
+        "     .Create\n"
+        "End With\n"
+    )
+
+
+def probe_vba(name, field_name="efield", x="0", y="0", z="0",
+              orientation="X") -> str:
+    return (
+        "With Probe\n"
+        "     .Reset\n"
+        f'     .Name "{name}"\n'
+        f'     .FieldName "{field_name}"\n'
+        f'     .Location "{x}", "{y}", "{z}"\n'
+        f'     .Orientation "{orientation}"\n'
+        '     .Origin "Free"\n'
+        "     .Create\n"
+        "End With\n"
+    )
+
+
+def next_port_number(ports) -> int:
+    nums = []
+    for p in ports or []:
+        try:
+            nums.append(int(p.get("port_number")))
+        except (TypeError, ValueError):
+            continue
+    return (max(nums) + 1) if nums else 1
+
+
+def eval_point(xyz, params) -> tuple | None:
+    if not xyz or len(xyz) != 3:
+        return None
+    try:
+        return tuple(float(eval_expr(v, params)) for v in xyz)
+    except Exception:
+        return None
+
+
+def eval_range(pair, params) -> tuple | None:
+    if not pair or len(pair) != 2:
+        return None
+    try:
+        return (float(eval_expr(pair[0], params)),
+                float(eval_expr(pair[1], params)))
+    except Exception:
+        return None
+
+
+def eval_excitations(data: dict) -> None:
+    """Resolve port P1/P2 / waveguide box and probe xyz from parameters."""
+    if not data:
+        return
+    params = data.get("parameters") or []
+    for port in data.get("ports") or []:
+        port["p1_xyz"] = eval_point(port.get("p1"), params)
+        port["p2_xyz"] = eval_point(port.get("p2"), params)
+        xr = eval_range(port.get("xrange"), params)
+        yr = eval_range(port.get("yrange"), params)
+        zr = eval_range(port.get("zrange"), params)
+        if xr and yr and zr:
+            port["box"] = (xr[0], xr[1], yr[0], yr[1], zr[0], zr[1])
+        else:
+            port.pop("box", None)
+    for probe in data.get("probes") or []:
+        xyz = (probe.get("x"), probe.get("y"), probe.get("z"))
+        if all(v not in (None, "") for v in xyz):
+            probe["xyz"] = eval_point(xyz, params)
+        else:
+            probe["xyz"] = eval_point(probe.get("p1"), params)
+
+
+def parse_set_point(block: str, key: str) -> tuple | None:
+    m = re.search(
+        rf'\.{key}\s+"[^"]*"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"',
+        block or "")
+    if not m:
+        return None
+    return (m.group(1), m.group(2), m.group(3))
+
+
 def unique_solid_name(existing: set, component: str, base: str) -> str:
     name = f"{component}:{base}"
     if name not in existing:

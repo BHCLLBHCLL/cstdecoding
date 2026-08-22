@@ -4,12 +4,13 @@
 from cst_parser import new_project_files, open_cst, write_cst
 from cst_project import (
     UndoStack, append_history, archive_text, boolean_vba, box_mesh,
-    brick_vba, cone_mesh, cylinder_mesh, dump_parameters_json,
-    eval_expr, intersect_bounds, material_vba, mesh_bounds, merge_meshes,
-    parse_hidden_solids, dump_hidden_solids, resolve_parameters,
-    rotate_fn, set_parameter_in_mod, sphere_mesh, torus_mesh,
-    transform_component, transform_translate_vba, translate_fn, union_bounds,
-    unique_solid_name, write_parameters,
+    brick_vba, cone_mesh, cylinder_mesh, discrete_port_vba, dump_parameters_json,
+    eval_excitations, eval_expr, eval_point, eval_range, intersect_bounds,
+    material_vba, mesh_bounds, merge_meshes, monitor_vba, next_port_number,
+    parse_hidden_solids, dump_hidden_solids, parse_set_point, probe_vba,
+    resolve_parameters, rotate_fn, set_parameter_in_mod, sphere_mesh,
+    torus_mesh, transform_component, transform_translate_vba, translate_fn,
+    union_bounds, unique_solid_name, waveguide_port_vba, write_parameters,
 )
 from pathlib import Path
 
@@ -192,3 +193,53 @@ def test_dump_parameters_json_descr_key():
     ]).decode("utf-8")
     assert '"descr": "one"' in blob
     assert '"name": "a"' in blob
+
+
+def test_port_monitor_probe_vba_and_eval():
+    vba = discrete_port_vba(1, "50.0", ("0", "0.5", "0"), ("0", "-0.5", "0"))
+    assert '.PortNumber "1"' in vba
+    assert '.Impedance "50.0"' in vba
+    assert '.SetP1 "False", "0", "0.5", "0"' in vba
+    assert '.SetP2 "False", "0", "-0.5", "0"' in vba
+    p1 = parse_set_point(vba, "SetP1")
+    p2 = parse_set_point(vba, "SetP2")
+    assert p1 == ("0", "0.5", "0")
+    assert p2 == ("0", "-0.5", "0")
+    dipole = (
+        'With DiscretePort\n'
+        '     .SetP1 "True", "0", "0.5", "0"\n'
+        '     .SetP2 "True", "0", "-0.5", "0"\n'
+        'End With\n'
+    )
+    assert parse_set_point(dipole, "SetP1") == ("0", "0.5", "0")
+    wg = waveguide_port_vba(2, "zmin", ("-10", "10"), ("-5", "5"), ("0", "0"))
+    assert 'With Port' in wg
+    assert '.Orientation "zmin"' in wg
+    mon = monitor_vba("farfield (f=3.5)", "Farfield", "3.5")
+    assert '.FieldType "Farfield"' in mon
+    assert '.MonitorValue "3.5"' in mon
+    pr = probe_vba("probe1", "efield", "0", "0", "1", "Z")
+    assert '.FieldName "efield"' in pr
+    assert '.Location "0", "0", "1"' in pr
+    assert next_port_number([{"port_number": 1}, {"port_number": 3}]) == 4
+    assert next_port_number([]) == 1
+    params = [
+        {"name": "x0", "expr": "5", "value": "5", "description": ""},
+        {"name": "y0", "expr": "2", "value": "2", "description": ""},
+        {"name": "h", "expr": "1.6", "value": "1.6", "description": ""},
+    ]
+    assert eval_point(("x0", "y0", "0.0"), params) == (5.0, 2.0, 0.0)
+    assert eval_range(("-h", "h"), params) == (-1.6, 1.6)
+    data = {
+        "parameters": params,
+        "ports": [{
+            "p1": ("x0", "y0", "0.0"),
+            "p2": ("x0", "y0", "-h"),
+            "xrange": None,
+        }],
+        "probes": [{"x": "x0", "y": "y0", "z": "h"}],
+    }
+    eval_excitations(data)
+    assert data["ports"][0]["p1_xyz"] == (5.0, 2.0, 0.0)
+    assert abs(data["ports"][0]["p2_xyz"][2] + 1.6) < 1e-9
+    assert data["probes"][0]["xyz"] == (5.0, 2.0, 1.6)

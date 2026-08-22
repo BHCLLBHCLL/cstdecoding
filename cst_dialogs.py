@@ -176,3 +176,71 @@ def component_dialog(parent) -> str | None:
     if dlg.exec_() != QDialog.Accepted:
         return None
     return name.text().strip() or None
+
+
+def discrete_port_dialog(parent, defaults=None) -> dict | None:
+    d = defaults or {}
+    fields = [
+        ("Port number", "port_number", QLineEdit(str(d.get("port_number", "1")))),
+        ("Label", "label", QLineEdit(str(d.get("label", "")))),
+        ("Impedance", "impedance", QLineEdit(str(d.get("impedance", "50.0")))),
+        ("P1 X", "x1", QLineEdit(str(d.get("x1", "0")))),
+        ("P1 Y", "y1", QLineEdit(str(d.get("y1", "0")))),
+        ("P1 Z", "z1", QLineEdit(str(d.get("z1", "0")))),
+        ("P2 X", "x2", QLineEdit(str(d.get("x2", "0")))),
+        ("P2 Y", "y2", QLineEdit(str(d.get("y2", "0")))),
+        ("P2 Z", "z2", QLineEdit(str(d.get("z2", "1")))),
+        ("Type", "ptype", _combo(parent, ["SParameter", "Voltage", "Current"],
+                                 d.get("ptype", "SParameter"))),
+    ]
+    return _form_dialog(parent, "Discrete Port", fields)
+
+
+def waveguide_port_dialog(parent, defaults=None) -> dict | None:
+    d = defaults or {}
+    fields = [
+        ("Port number", "port_number", QLineEdit(str(d.get("port_number", "1")))),
+        ("Label", "label", QLineEdit(str(d.get("label", "")))),
+        ("Orientation", "orientation",
+         _combo(parent, ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"],
+                d.get("orientation", "zmin"))),
+        ("Xmin", "xmin", QLineEdit(str(d.get("xmin", "-10")))),
+        ("Xmax", "xmax", QLineEdit(str(d.get("xmax", "10")))),
+        ("Ymin", "ymin", QLineEdit(str(d.get("ymin", "-5")))),
+        ("Ymax", "ymax", QLineEdit(str(d.get("ymax", "5")))),
+        ("Zmin", "zmin", QLineEdit(str(d.get("zmin", "0")))),
+        ("Zmax", "zmax", QLineEdit(str(d.get("zmax", "0")))),
+    ]
+    return _form_dialog(parent, "Waveguide Port", fields)
+
+
+def monitor_dialog(parent, defaults=None) -> dict | None:
+    d = defaults or {}
+    fields = [
+        ("Name", "name", QLineEdit(str(d.get("name", "e-field (f=2.45)")))),
+        ("Field type", "field_type",
+         _combo(parent, ["Efield", "Hfield", "Farfield", "Powerflow"],
+                d.get("field_type", "Efield"))),
+        ("Frequency", "frequency", QLineEdit(str(d.get("frequency", "2.45")))),
+        ("Domain", "domain",
+         _combo(parent, ["Frequency", "Time"], d.get("domain", "Frequency"))),
+        ("Dimension", "dimension",
+         _combo(parent, ["Volume", "Surface"], d.get("dimension", "Volume"))),
+    ]
+    return _form_dialog(parent, "Field Monitor", fields)
+
+
+def probe_dialog(parent, defaults=None) -> dict | None:
+    d = defaults or {}
+    fields = [
+        ("Name", "name", QLineEdit(str(d.get("name", "probe1")))),
+        ("Field", "field_name",
+         _combo(parent, ["efield", "hfield", "voltage", "current"],
+                d.get("field_name", "efield"))),
+        ("X", "x", QLineEdit(str(d.get("x", "0")))),
+        ("Y", "y", QLineEdit(str(d.get("y", "0")))),
+        ("Z", "z", QLineEdit(str(d.get("z", "0")))),
+        ("Orientation", "orientation",
+         _combo(parent, ["X", "Y", "Z"], d.get("orientation", "X"))),
+    ]
+    return _form_dialog(parent, "Probe", fields)

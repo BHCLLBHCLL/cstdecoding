@@ -279,15 +279,44 @@ class PropertyInspector(QWidget):
             self.form.removeRow(0)
         self._fields.clear()
         rows = [("Type", kind or "")]
-        editable = kind in ("solid", "component", "material")
+        editable = kind in ("solid", "component", "material", "port", "ports",
+                            "monitor", "probe")
         payload = payload or {}
         if editable:
             self._add_edit_row("Name", name or payload.get("name", ""), "name")
             if kind in ("solid", "component"):
                 self._add_edit_row(
                     "Material", str(payload.get("material") or ""), "material")
+            if kind in ("port", "ports"):
+                self._add_edit_row(
+                    "Impedance", str(payload.get("impedance") or "50"), "impedance")
+                p1 = payload.get("p1") or ("", "", "")
+                p2 = payload.get("p2") or ("", "", "")
+                if len(p1) == 3:
+                    self._add_edit_row("P1 X", str(p1[0]), "x1")
+                    self._add_edit_row("P1 Y", str(p1[1]), "y1")
+                    self._add_edit_row("P1 Z", str(p1[2]), "z1")
+                if len(p2) == 3:
+                    self._add_edit_row("P2 X", str(p2[0]), "x2")
+                    self._add_edit_row("P2 Y", str(p2[1]), "y2")
+                    self._add_edit_row("P2 Z", str(p2[2]), "z2")
+            if kind == "monitor":
+                self._add_edit_row(
+                    "Field type", str(payload.get("field_type") or ""), "field_type")
+                self._add_edit_row(
+                    "Frequency", str(payload.get("frequency") or ""), "frequency")
+            if kind == "probe":
+                self._add_edit_row("X", str(payload.get("x") or ""), "x")
+                self._add_edit_row("Y", str(payload.get("y") or ""), "y")
+                self._add_edit_row("Z", str(payload.get("z") or ""), "z")
         if payload:
             skip = {"name", "material"} if editable else set()
+            if kind in ("port", "ports"):
+                skip.update({"impedance", "p1", "p2", "p1_xyz", "p2_xyz", "box"})
+            if kind == "monitor":
+                skip.update({"field_type", "frequency"})
+            if kind == "probe":
+                skip.update({"x", "y", "z", "p1", "xyz"})
             for key in ("material", "type", "field_type", "impedance",
                         "port_number", "epsilon", "mu", "colour",
                         "expr", "value", "description"):
@@ -631,6 +660,15 @@ class NavigationTree(QWidget):
                 return
             item.setData(0, FULLNAME_ROLE, new_short)
             self.context_action.emit("rename", kind, f"{old_full}\n{new_short}")
+            return
+        if kind in ("port", "ports", "monitor", "probe"):
+            if not new_short or new_short == old_full:
+                self._block = True
+                item.setText(0, old_full or item.text(0))
+                self._block = False
+                return
+            item.setData(0, FULLNAME_ROLE, new_short)
+            self.context_action.emit("rename", kind, f"{old_full}\n{new_short}")
 
     def _collect_solid_names(self, item) -> list:
         names = []
@@ -909,7 +947,7 @@ class NavigationTree(QWidget):
         kind_name = kind or icon_key
         flags = child.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled
         if kind_name in ("solid", "component", "material", "collection",
-                         "folder", "group"):
+                         "folder", "group", "port", "ports", "monitor", "probe"):
             flags |= Qt.ItemIsEditable
         if kind_name in ("solid", "component"):
             flags |= Qt.ItemIsDragEnabled
@@ -985,11 +1023,11 @@ class NavigationTree(QWidget):
             ("Plane Wave", "gear", "empty", []),
             ("Farfield Sources", "gear", "empty", []),
             ("Field Sources", "gear", "empty", []),
-            ("Ports", "gear", "dict_list", ports),
+            ("Ports", "ports", "dict_list", ports),
             ("Excitation Signals", "gear", "empty", []),
-            ("Field Monitors", "gear", "dict_list", monitors),
+            ("Field Monitors", "monitor", "dict_list", monitors),
             ("Voltage and Current Monitors", "gear", "empty", []),
-            ("Probes", "gear", "dict_list", probes),
+            ("Probes", "probe", "dict_list", probes),
             ("Mesh", "gear", "empty", []),
             ("1D Results", "results", "dict_list", results_1d),
             ("2D/3D Results", "results", "dict_list", results_2d),
@@ -1062,10 +1100,11 @@ class NavigationTree(QWidget):
                     self._add_child(
                         item, obj.get("name", "?"), "wcs", obj, kind="wcs")
             elif data_type == "dict_list" and data:
+                child_kind = {"ports": "port"}.get(icon_key, icon_key)
                 for obj in data:
                     self._add_child(
                         item, obj.get("name", "?"), icon_key, obj,
-                        kind=icon_key)
+                        kind=child_kind)
 
         self.tree.expandToDepth(1)
         self._block = False
@@ -1114,25 +1153,45 @@ class CST3DCanvas(QWidget):
         self.update()
 
     def _compute_bounds(self) -> None:
-        components = self._project_data.get("components", [])
-        if not components:
+        mins = [float("inf")] * 3
+        maxs = [float("-inf")] * 3
+        found = False
+
+        def acc(pt):
+            nonlocal found
+            if not pt or len(pt) != 3:
+                return
+            try:
+                xyz = (float(pt[0]), float(pt[1]), float(pt[2]))
+            except (TypeError, ValueError):
+                return
+            found = True
+            for i, v in enumerate(xyz):
+                mins[i] = min(mins[i], v)
+                maxs[i] = max(maxs[i], v)
+
+        def acc_box(b):
+            if not b or len(b) != 6:
+                return
+            acc((b[0], b[2], b[4]))
+            acc((b[1], b[3], b[5]))
+
+        for comp in self._project_data.get("components") or []:
+            acc_box(comp.get("bounds"))
+        for port in self._project_data.get("ports") or []:
+            acc(port.get("p1_xyz"))
+            acc(port.get("p2_xyz"))
+            acc_box(port.get("box"))
+        for probe in self._project_data.get("probes") or []:
+            acc(probe.get("xyz"))
+        if not found:
             self._bounds = None
             return
-        all_min = [float("inf")] * 3
-        all_max = [float("-inf")] * 3
-        for comp in components:
-            b = comp.get("bounds")
-            if not b:
-                continue
-            for i in range(3):
-                all_min[i] = min(all_min[i], b[2 * i])
-                all_max[i] = max(all_max[i], b[2 * i + 1])
-        if all(all_min[i] < all_max[i] for i in range(3)):
-            self._bounds = (all_min[0], all_max[0],
-                            all_min[1], all_max[1],
-                            all_min[2], all_max[2])
-        else:
-            self._bounds = (-100, 100, -100, 100, -10, 10)
+        for i in range(3):
+            if maxs[i] - mins[i] < 1e-6:
+                mins[i] -= 1.0
+                maxs[i] += 1.0
+        self._bounds = (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
 
     def _world_to_screen(self, x, y, z):
         angle = math.radians(self._view_angle)
@@ -1165,6 +1224,7 @@ class CST3DCanvas(QWidget):
             return
         self._draw_axes(p)
         self._draw_components(p)
+        self._draw_ports(p)
         self._draw_info(p)
         p.end()
 
@@ -1235,6 +1295,34 @@ class CST3DCanvas(QWidget):
             if not bounds:
                 continue
             self._draw_box(p, bounds, color, label, alpha_scale)
+
+    def _draw_ports(self, p):
+        p.setPen(QPen(QColor(220, 40, 40), 2))
+        p.setFont(QFont("Segoe UI", 8))
+        for port in self._project_data.get("ports") or []:
+            box = port.get("box")
+            if box:
+                self._draw_box(p, box, (0.86, 0.16, 0.16),
+                               port.get("name") or "", 0.35)
+            a, b = port.get("p1_xyz"), port.get("p2_xyz")
+            if not a or not b:
+                continue
+            s1 = self._world_to_screen(*a)
+            s2 = self._world_to_screen(*b)
+            p.setPen(QPen(QColor(220, 40, 40), 2))
+            p.drawLine(int(s1[0]), int(s1[1]), int(s2[0]), int(s2[1]))
+            mx, my = (s1[0] + s2[0]) / 2, (s1[1] + s2[1]) / 2
+            p.drawText(int(mx) + 4, int(my),
+                       port.get("name") or f"port{port.get('port_number', '')}")
+        p.setBrush(QColor(40, 160, 40, 180))
+        p.setPen(QPen(QColor(20, 80, 20), 1))
+        for probe in self._project_data.get("probes") or []:
+            xyz = probe.get("xyz")
+            if not xyz:
+                continue
+            sx, sy = self._world_to_screen(*xyz)
+            p.drawEllipse(int(sx) - 4, int(sy) - 4, 8, 8)
+            p.drawText(int(sx) + 6, int(sy) - 4, probe.get("name") or "probe")
 
     def _draw_mesh(self, p, mesh, color, name, alpha_scale=0.8):
         points = mesh.get("points") or []
@@ -1697,6 +1785,82 @@ class CST3DViewport(QWidget):
         if wires:
             self._add_wire_actor(name, wires, bounds)
 
+    def add_glyph_line(self, name, p1, p2, color=(0.86, 0.16, 0.16)):
+        if vtk is None or not self._using_vtk or not self._renderer:
+            return
+        src = vtk.vtkLineSource()
+        src.SetPoint1(float(p1[0]), float(p1[1]), float(p1[2]))
+        src.SetPoint2(float(p2[0]), float(p2[1]), float(p2[2]))
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(src.GetOutputPort())
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        prop.SetColor(*color)
+        prop.SetLineWidth(2.4)
+        prop.SetRepresentationToWireframe()
+        try:
+            prop.LightingOff()
+        except Exception:
+            pass
+        self._renderer.AddActor(actor)
+        self._actors.append((name, actor, "glyph"))
+        xs = (float(p1[0]), float(p2[0]))
+        ys = (float(p1[1]), float(p2[1]))
+        zs = (float(p1[2]), float(p2[2]))
+        self._update_bounds((min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)))
+
+    def add_glyph_box(self, name, bounds, color=(0.86, 0.16, 0.16)):
+        if vtk is None or not self._using_vtk or not self._renderer:
+            return
+        xmin, xmax, ymin, ymax, zmin, zmax = bounds
+        cube = vtk.vtkCubeSource()
+        cube.SetBounds(xmin, xmax, ymin, ymax, zmin, zmax)
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(cube.GetOutputPort())
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        prop.SetColor(*color)
+        prop.SetLineWidth(1.6)
+        prop.SetRepresentationToWireframe()
+        try:
+            prop.LightingOff()
+        except Exception:
+            pass
+        self._renderer.AddActor(actor)
+        self._actors.append((name, actor, "glyph"))
+        self._update_bounds(bounds)
+
+    def add_glyph_point(self, name, xyz, color=(0.16, 0.62, 0.16)):
+        if vtk is None or not self._using_vtk or not self._renderer:
+            return
+        x, y, z = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        span = 1.0
+        if self._bounds:
+            span = max(self._bounds[1] - self._bounds[0],
+                       self._bounds[3] - self._bounds[2],
+                       self._bounds[5] - self._bounds[4], 1.0)
+        r = max(span * 0.015, 0.08)
+        src = vtk.vtkSphereSource()
+        src.SetCenter(x, y, z)
+        src.SetRadius(r)
+        src.SetThetaResolution(12)
+        src.SetPhiResolution(12)
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(src.GetOutputPort())
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        prop.SetColor(*color)
+        try:
+            prop.LightingOff()
+        except Exception:
+            pass
+        self._renderer.AddActor(actor)
+        self._actors.append((name, actor, "glyph"))
+        self._update_bounds((x - r, x + r, y - r, y + r, z - r, z + r))
+
     def _style_edge_mapper(self, mapper) -> None:
         mapper.ScalarVisibilityOff()
         try:
@@ -1917,6 +2081,9 @@ class CST3DViewport(QWidget):
                 prop.SetColor(0.22, 0.22, 0.24)
                 prop.SetLineWidth(1.15 if mode == "Wireframe" else 1.0)
                 continue
+            if kind == "glyph":
+                actor.SetVisibility(0 if hide else 1)
+                continue
             if hide:
                 actor.SetVisibility(0)
                 continue
@@ -2012,6 +2179,16 @@ class CST3DViewport(QWidget):
                               wires=wires)
             elif bounds:
                 self.add_box(name, bounds, color, opacity)
+        for port in project_data.get("ports") or []:
+            pname = port.get("name") or f"port{port.get('port_number', '')}"
+            if port.get("p1_xyz") and port.get("p2_xyz"):
+                self.add_glyph_line(pname, port["p1_xyz"], port["p2_xyz"])
+            elif port.get("box"):
+                self.add_glyph_box(pname, port["box"], (0.86, 0.16, 0.16))
+        for probe in project_data.get("probes") or []:
+            xyz = probe.get("xyz")
+            if xyz:
+                self.add_glyph_point(probe.get("name") or "probe", xyz)
         self.set_drawing_mode(self._drawing_mode)
         if self._selected:
             self._apply_highlight()

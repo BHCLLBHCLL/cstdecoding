@@ -594,3 +594,116 @@ def test_boolean_transform_material_component(viewer):
         assert base["bounds"][1] >= 19
     finally:
         other.close()
+
+
+def test_discrete_port_monitor_probe_roundtrip(viewer):
+    from pathlib import Path
+
+    viewer._on_new()
+    viewer._add_discrete_port({
+        "port_number": "1", "impedance": "50.0", "label": "",
+        "x1": "0", "y1": "0.5", "z1": "0",
+        "x2": "0", "y2": "-0.5", "z2": "0",
+        "ptype": "SParameter",
+    })
+    port = viewer._find_named("ports", "port1")
+    assert port is not None
+    assert port["impedance"] == "50.0"
+    assert port["p1"] == ("0", "0.5", "0")
+    assert port["p2"] == ("0", "-0.5", "0")
+    assert port["p1_xyz"] == (0.0, 0.5, 0.0)
+    assert port["p2_xyz"] == (0.0, -0.5, 0.0)
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert '.SetP1 "False", "0", "0.5", "0"' in mod
+    assert '.SetP2 "False", "0", "-0.5", "0"' in mod
+    assert '.Impedance "50.0"' in mod
+    labels = [viewer.nav_tree.tree.topLevelItem(i).text(0)
+              for i in range(viewer.nav_tree.tree.topLevelItemCount())]
+    assert "Ports" in labels
+    ports_node = next(
+        viewer.nav_tree.tree.topLevelItem(i)
+        for i in range(viewer.nav_tree.tree.topLevelItemCount())
+        if viewer.nav_tree.tree.topLevelItem(i).text(0) == "Ports")
+    assert ports_node.childCount() == 1
+    assert ports_node.child(0).text(0) == "port1"
+
+    viewer._add_monitor({
+        "name": "e-field (f=2.45)", "field_type": "Efield",
+        "frequency": "2.45", "domain": "Frequency", "dimension": "Volume",
+    })
+    viewer._add_monitor({
+        "name": "h-field (f=2.45)", "field_type": "Hfield",
+        "frequency": "2.45", "domain": "Frequency", "dimension": "Volume",
+    })
+    viewer._add_monitor({
+        "name": "farfield (f=3.5)", "field_type": "Farfield",
+        "frequency": "3.5", "domain": "Frequency", "dimension": "Volume",
+    })
+    viewer._add_probe({
+        "name": "probe1", "field_name": "efield",
+        "x": "0", "y": "0", "z": "1", "orientation": "Z",
+    })
+    mons = {m["name"]: m for m in viewer._project_data["monitors"]}
+    assert mons["e-field (f=2.45)"]["field_type"] == "Efield"
+    assert mons["h-field (f=2.45)"]["field_type"] == "Hfield"
+    assert mons["farfield (f=3.5)"]["field_type"] == "Farfield"
+    assert mons["farfield (f=3.5)"]["frequency"] == "3.5"
+    assert viewer._find_named("probes", "probe1")["xyz"][2] == 1.0
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert '.FieldType "Farfield"' in mod
+    assert '.FieldName "efield"' in mod
+
+    viewer._project_data["parameters"] = [
+        {"name": "x0", "expr": "5", "value": "5", "description": ""},
+        {"name": "y0", "expr": "2", "value": "2", "description": ""},
+        {"name": "h", "expr": "1.6", "value": "1.6", "description": ""},
+    ]
+    viewer._add_discrete_port({
+        "port_number": "2", "impedance": "50", "label": "",
+        "x1": "x0", "y1": "y0", "z1": "0.0",
+        "x2": "x0", "y2": "y0", "z2": "-h",
+        "ptype": "SParameter",
+    })
+    micro = viewer._find_named("ports", "port2")
+    assert micro["p1"] == ("x0", "y0", "0.0")
+    assert micro["p2"] == ("x0", "y0", "-h")
+    assert micro["p1_xyz"] == (5.0, 2.0, 0.0)
+    assert abs(micro["p2_xyz"][2] + 1.6) < 1e-9
+
+    viewer._on_property_changed("port", "port1", "impedance", "75")
+    assert viewer._find_named("ports", "port1")["impedance"] == "75"
+    viewer._on_property_changed("port", "port1", "y1", "1")
+    assert viewer._find_named("ports", "port1")["p1"][1] == "1"
+    assert viewer._find_named("ports", "port1")["p1_xyz"][1] == 1.0
+
+    viewer._nav_delete("port", "port1")
+    names = {p["name"] for p in viewer._project_data["ports"]}
+    assert "port1" not in names
+    assert "port2" in names
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert 'Port.Delete "1"' in mod
+
+    scratch = Path(__file__).resolve().parent / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    out = scratch / "ports_m6.cst"
+    assert viewer._write_project(str(out)) is True
+    other = __import__("cst_gui").CSTMainWindow(enable_3d=False)
+    try:
+        other._load_cst(str(out))
+        names = {p["name"] for p in other._project_data["ports"]}
+        assert "port1" not in names
+        p2 = other._find_named("ports", "port2")
+        assert p2 is not None
+        assert p2["impedance"] == "50"
+        assert p2["p1"] == ("x0", "y0", "0.0")
+        assert p2["p2"] == ("x0", "y0", "-h")
+        assert p2["p1_xyz"] == (5.0, 2.0, 0.0)
+        assert abs(p2["p2_xyz"][2] + 1.6) < 1e-9
+        mons = {m["name"]: m for m in other._project_data["monitors"]}
+        assert mons["e-field (f=2.45)"]["field_type"] == "Efield"
+        assert mons["farfield (f=3.5)"]["frequency"] == "3.5"
+        probe = other._find_named("probes", "probe1")
+        assert probe["xyz"][2] == 1.0
+        assert probe["orientation"] == "Z"
+    finally:
+        other.close()
