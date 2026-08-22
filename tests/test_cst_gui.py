@@ -514,3 +514,83 @@ def test_drop_to_group_and_pick_sync(viewer):
     assert box["material"] == "Vacuum"
     assert 'Solid.ChangeMaterial "component1:box", "Vacuum"' in (
         viewer._archive["Model/3D/Model.mod"].decode("latin-1"))
+
+
+def test_boolean_transform_material_component(viewer):
+    from pathlib import Path
+    from cst_parser import open_cst
+
+    viewer._on_new()
+    viewer._add_shape("brick", {
+        "name": "base", "component": "component1", "material": "PEC",
+        "xmin": "0", "xmax": "10", "ymin": "0", "ymax": "4",
+        "zmin": "0", "zmax": "2",
+    })
+    viewer._add_shape("brick", {
+        "name": "cut", "component": "component1", "material": "PEC",
+        "xmin": "4", "xmax": "12", "ymin": "1", "ymax": "3",
+        "zmin": "-1", "zmax": "3",
+    })
+    viewer._apply_boolean("subtract", "component1:base", "component1:cut")
+    names = {c["name"] for c in viewer._project_data["components"]}
+    assert "component1:base" in names
+    assert "component1:cut" not in names
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert 'Solid.Subtract "component1:base", "component1:cut"' in mod
+
+    viewer._apply_boolean("add", "component1:base", "component1:base")
+    # rejected same solid; still one base
+    assert len([c for c in viewer._project_data["components"]
+                if c["name"] == "component1:base"]) == 1
+
+    viewer._add_shape("brick", {
+        "name": "tool", "component": "component1", "material": "PEC",
+        "xmin": "8", "xmax": "14", "ymin": "0", "ymax": "4",
+        "zmin": "0", "zmax": "2",
+    })
+    viewer._apply_boolean("add", "component1:base", "component1:tool")
+    base = viewer._find_component("component1:base")
+    assert base["bounds"][1] >= 14
+    assert viewer._find_component("component1:tool") is None
+
+    before = base["bounds"][0]
+    viewer._apply_transform("translate", {
+        "name": "component1:base", "dx": "5", "dy": "0", "dz": "0",
+    })
+    assert viewer._find_component("component1:base")["bounds"][0] == before + 5
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert 'Transform "Shape", "Translate"' in mod
+
+    viewer._add_material({
+        "name": "FR4", "epsilon": "4.3", "mu": "1.0", "kappa": "0.0",
+        "tand": "0.025", "colour": "0.9,0.6,0.2", "folder": "",
+    })
+    mats = {m["name"] for m in viewer._project_data["materials"]}
+    assert "FR4" in mats
+    assert '.Epsilon "4.3"' in viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+
+    viewer._add_component("antenna")
+    assert "antenna" in viewer._component_folders()
+    viewer._nav_delete("collection", "antenna")
+    assert "antenna" not in viewer._project_data.get("empty_components", [])
+    assert 'Component.Delete "antenna"' in viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+
+    scratch = Path(__file__).resolve().parent / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    out = scratch / "bool_xfrm.cst"
+    assert viewer._write_project(str(out)) is True
+    other = __import__("cst_gui").CSTMainWindow(enable_3d=False)
+    try:
+        other._load_cst(str(out))
+        names = {c["name"] for c in other._project_data["components"]}
+        assert "component1:cut" not in names
+        assert "component1:tool" not in names
+        assert "component1:base" in names
+        mats = {m["name"] for m in other._project_data["materials"]}
+        assert "FR4" in mats
+        # translate + add applied on parse
+        base = other._find_component("component1:base")
+        assert base["bounds"][0] >= 5
+        assert base["bounds"][1] >= 19
+    finally:
+        other.close()

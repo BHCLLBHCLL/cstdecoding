@@ -754,6 +754,10 @@ class NavigationTree(QWidget):
         self._add_menu_action(menu, "Show", "show", "show", "Ctrl+Shift+H",
                               enabled=is_solid or is_folder)
         self._add_menu_action(menu, "Show All", "show_all", shortcut="Ctrl+U")
+        if (item.text(0) == "Components"
+                or (item.data(0, FULLNAME_ROLE) or "") == "Components"):
+            self._add_menu_action(menu, "New Component...", "new_component",
+                                  "component")
         menu.addSeparator()
 
         elec = menu.addMenu("Electrical Connections")
@@ -998,8 +1002,15 @@ class NavigationTree(QWidget):
             item = QTreeWidgetItem(self.tree, [label])
             self._set_item(item, icon_key, label, icon_key=icon_key)
 
-            if data_type == "components" and data:
-                self._add_solid_tree(item, nest_solids(data), excluded)
+            if data_type == "components":
+                nested = nest_solids(data) if data else {}
+                if nested:
+                    self._add_solid_tree(item, nested, excluded)
+                for folder in project_data.get("empty_components") or []:
+                    if folder and folder not in nested:
+                        self._add_child(
+                            item, folder.split("/")[-1], "collection",
+                            kind="collection", fullname=folder)
             elif data_type == "groups":
                 for fixed in _CST_GROUP_FIXED:
                     g = by_group.get(fixed) or {"name": fixed, "items": []}

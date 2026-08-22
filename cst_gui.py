@@ -29,14 +29,21 @@ from cst_parser import (
     CstParseError, open_cst, write_cst, new_project_files, read_entry,
 )
 from cst_project import (
-    UndoStack, append_change_material, append_component_new, append_group_item,
-    append_history, append_solid_delete, append_solid_rename, archive_get,
-    box_mesh, brick_vba, cone_mesh, cone_vba, cylinder_mesh, cylinder_vba,
-    eval_expr, mesh_bounds, parse_hidden_solids, resolve_parameters,
-    snapshot_state, sphere_mesh, sphere_vba, torus_mesh, torus_vba,
+    UndoStack, append_change_material, append_component_delete,
+    append_component_new, append_group_item, append_history,
+    append_solid_delete, append_solid_rename, archive_get, boolean_vba,
+    bounds_center, box_mesh, brick_vba, cone_mesh, cone_vba, cylinder_mesh,
+    cylinder_vba, eval_expr, intersect_bounds, material_vba, merge_meshes,
+    mesh_bounds, mirror_fn, parse_hidden_solids, resolve_parameters,
+    rotate_fn, scale_fn, snapshot_state, sphere_mesh, sphere_vba, torus_mesh,
+    torus_vba, transform_component, transform_mirror_vba, transform_rotate_vba,
+    transform_scale_vba, transform_translate_vba, translate_fn, union_bounds,
     unique_solid_name, write_hidden, write_parameters,
 )
-from cst_dialogs import shape_dialog
+from cst_dialogs import (
+    boolean_dialog, component_dialog, material_dialog, shape_dialog,
+    transform_dialog,
+)
 from cst_icons import AppIcons
 from cst_panes import (
     CST3DCanvas, CST3DViewport, MessageWindow, NavigationTree, PaneFrame,
@@ -294,16 +301,16 @@ class CSTMainWindow(QMainWindow):
         ], big_first=True))
         # 3D_Modeling_Shape BooleanAdd / BooleanSubtract / BooleanInsert
         layout.addWidget(self._make_ribbon_group("Boolean", [
-            ("Add", "union", self._nyi_slot("Boolean Add")),
-            ("Subtract", "subtract", self._nyi_slot("Boolean Subtract")),
-            ("Intersect", "intersect", self._nyi_slot("Boolean Intersect")),
+            ("Add", "union", lambda: self._on_boolean("add")),
+            ("Subtract", "subtract", lambda: self._on_boolean("subtract")),
+            ("Intersect", "intersect", lambda: self._on_boolean("intersect")),
         ]))
         # 3D_Modeling_Shape Transform / Align
         layout.addWidget(self._make_ribbon_group("Transform", [
-            ("Transform", "translate", self._nyi_slot("Transform")),
-            ("Rotate", "rotate", self._nyi_slot("Rotate")),
-            ("Mirror", "mirror", self._nyi_slot("Mirror")),
-            ("Scale", "scale", self._nyi_slot("Scale")),
+            ("Transform", "translate", lambda: self._on_transform("translate")),
+            ("Rotate", "rotate", lambda: self._on_transform("rotate")),
+            ("Mirror", "mirror", lambda: self._on_transform("mirror")),
+            ("Scale", "scale", lambda: self._on_transform("scale")),
         ]))
         # 3D_Modeling_WCS Align / AlignGlobal
         layout.addWidget(self._make_ribbon_group("WCS", [
@@ -312,7 +319,7 @@ class CSTMainWindow(QMainWindow):
         ]))
         # 3D_Modeling_General Material / NewMaterial / MaterialLibrary
         layout.addWidget(self._make_ribbon_group("Materials", [
-            ("New", "material", self._nyi_slot("New Material")),
+            ("New", "material", self._on_new_material),
             ("Library", "material", self._nyi_slot("Material Library")),
         ]))
         # Discrete / Waveguide ports live under simulation but are modeled here
@@ -777,10 +784,11 @@ class CSTMainWindow(QMainWindow):
             "edit_material": lambda: self._nav_edit_material(kind, name),
             "change_component": lambda: self._nav_change_component(name),
             "change_group": lambda: self._nav_change_group(name),
+            "new_component": self._on_new_component,
+            "transform": lambda: self._on_transform("translate"),
             "rect_select": lambda: self._nyi("Rectangle Selection"),
             "slice_uv": lambda: self._nyi("Slice by UV Plane"),
             "separate": lambda: self._nyi("Separate Shape"),
-            "transform": lambda: self._nyi("Transform"),
             "align": lambda: self._nyi("Align"),
             "local_mesh": lambda: self._nyi("Local Mesh Properties"),
             "elec_calc": lambda: self._nyi("Calculate Electrical Connections"),
@@ -914,6 +922,9 @@ class CSTMainWindow(QMainWindow):
         def apply():
             if need_component:
                 append_component_new(self._archive, component)
+                empties = self._project_data.setdefault("empty_components", [])
+                if component in empties:
+                    empties.remove(component)
             append_history(self._archive, caption, vba)
             self._project_data.setdefault("components", []).append(comp)
             self._selected_solid = full
@@ -923,8 +934,207 @@ class CSTMainWindow(QMainWindow):
         self.message_win.info(f"Created {full}")
         self.status.showMessage(f"Created {full}", 2500)
 
+    def _solid_names(self) -> list:
+        return [c.get("name") for c in (self._project_data or {}).get("components") or []
+                if c.get("name")]
+
+    def _on_boolean(self, op: str) -> None:
+        names = self._solid_names()
+        data = boolean_dialog(self, names, op)
+        if not data:
+            if len(names) < 2:
+                self.message_win.warn("Boolean needs two solids.")
+            return
+        self._apply_boolean(op, data.get("target", ""), data.get("tool", ""))
+
+    def _apply_boolean(self, op: str, target: str, tool: str) -> None:
+        a = self._find_component(target)
+        b = self._find_component(tool)
+        if a is None or b is None or target == tool:
+            self.message_win.warn("Boolean: pick two different solids.")
+            return
+        op = (op or "subtract").lower()
+
+        def apply():
+            comps = self._project_data.setdefault("components", [])
+            if op == "add":
+                ma, mb = a.get("mesh") or {}, b.get("mesh") or {}
+                if ma.get("faces") and mb.get("faces"):
+                    a["mesh"] = merge_meshes(ma, mb)
+                    a["bounds"] = mesh_bounds(a["mesh"])
+                elif a.get("bounds") and b.get("bounds"):
+                    a["bounds"] = union_bounds(a["bounds"], b["bounds"])
+                    a["mesh"] = box_mesh(*a["bounds"])
+            elif op == "intersect":
+                if not (a.get("bounds") and b.get("bounds")):
+                    raise ValueError("intersect needs bounds on both solids")
+                inter = intersect_bounds(a["bounds"], b["bounds"])
+                if inter is None:
+                    raise ValueError("solids do not overlap")
+                a["bounds"] = inter
+                a["mesh"] = box_mesh(*inter)
+            self._project_data["components"] = [
+                c for c in comps if c.get("name") != tool]
+            append_history(
+                self._archive, f"boolean {op} shapes: {target}, {tool}",
+                boolean_vba(op, target, tool))
+            if self._selected_solid == tool:
+                self._selected_solid = target
+            self._refresh_geometry()
+
+        try:
+            self._mutate(f"boolean {op}", apply)
+        except Exception as exc:
+            self.message_win.warn(f"Boolean {op}: {exc}")
+            return
+        self.message_win.info(f"Boolean {op}: {target} ← {tool}")
+
+    def _origin_from(self, data: dict, comp: dict) -> tuple:
+        bounds = comp.get("bounds") or (0, 0, 0, 0, 0, 0)
+        cx, cy, cz = bounds_center(bounds)
+        if data.get("cx"):
+            cx = self._eval_num(data["cx"], cx)
+        if data.get("cy"):
+            cy = self._eval_num(data["cy"], cy)
+        if data.get("cz"):
+            cz = self._eval_num(data["cz"], cz)
+        return (cx, cy, cz)
+
+    def _on_transform(self, mode: str) -> None:
+        names = self._solid_names()
+        if self._selected_solid and self._selected_solid in names:
+            names = [self._selected_solid] + [n for n in names if n != self._selected_solid]
+        data = transform_dialog(self, names, mode)
+        if not data:
+            if not names:
+                self.message_win.warn("No solids to transform.")
+            return
+        self._apply_transform(mode, data)
+
+    def _apply_transform(self, mode: str, data: dict) -> None:
+        name = data.get("name") or self._selected_solid
+        comp = self._find_component(name)
+        if comp is None:
+            self.message_win.warn(f"Transform: {name} not found.")
+            return
+        mode = (mode or data.get("mode") or "translate").lower()
+        origin = self._origin_from(data, comp)
+        if mode == "translate":
+            dx = self._eval_num(data.get("dx", "0"))
+            dy = self._eval_num(data.get("dy", "0"))
+            dz = self._eval_num(data.get("dz", "0"))
+            fn = translate_fn(dx, dy, dz)
+            vba = transform_translate_vba(
+                name, data.get("dx", dx), data.get("dy", dy), data.get("dz", dz))
+            caption = f"transform: translate {name}"
+        elif mode == "rotate":
+            axis = (data.get("axis") or "z").lower()[:1] or "z"
+            angle = self._eval_num(data.get("angle", "90"))
+            fn = rotate_fn(axis, angle, origin)
+            ax = ay = az = 0
+            if axis == "x":
+                ax = angle
+            elif axis == "y":
+                ay = angle
+            else:
+                az = angle
+            vba = transform_rotate_vba(
+                name, ax, ay, az, origin[0], origin[1], origin[2])
+            caption = f"transform: rotate {name}"
+        elif mode == "mirror":
+            axis = (data.get("axis") or "x").lower()[:1] or "x"
+            fn = mirror_fn(axis, origin)
+            nx = 1 if axis == "x" else 0
+            ny = 1 if axis == "y" else 0
+            nz = 1 if axis == "z" else 0
+            vba = transform_mirror_vba(
+                name, nx, ny, nz, origin[0], origin[1], origin[2])
+            caption = f"transform: mirror {name}"
+        else:
+            sx = self._eval_num(data.get("sx", "1"), 1.0)
+            sy = self._eval_num(data.get("sy", "1"), 1.0)
+            sz = self._eval_num(data.get("sz", "1"), 1.0)
+            fn = scale_fn(origin[0], origin[1], origin[2], sx, sy, sz)
+            vba = transform_scale_vba(
+                name, data.get("sx", sx), data.get("sy", sy), data.get("sz", sz),
+                origin[0], origin[1], origin[2])
+            caption = f"transform: scale {name}"
+
+        def apply():
+            updated = transform_component(comp, fn)
+            comp["bounds"] = updated.get("bounds")
+            if updated.get("mesh"):
+                comp["mesh"] = updated["mesh"]
+            append_history(self._archive, caption, vba)
+            self._refresh_geometry()
+
+        self._mutate(caption, apply)
+        self.message_win.info(caption)
+
+    def _on_new_material(self) -> None:
+        data = material_dialog(self)
+        if not data or not data.get("name"):
+            return
+        self._add_material(data)
+
+    def _add_material(self, data: dict) -> None:
+        colour = data.get("colour") or "0.75,0.80,0.90"
+        parts = [p.strip() for p in colour.split(",") if p.strip()]
+        while len(parts) < 3:
+            parts.append("0.8")
+        rgb = tuple(parts[:3])
+        mat = {
+            "name": data["name"],
+            "epsilon": data.get("epsilon") or "1.0",
+            "mu": data.get("mu") or "1.0",
+            "kappa": data.get("kappa") or "0.0",
+            "tand": data.get("tand") or "0.0",
+            "type": "Normal",
+            "folder": data.get("folder") or "",
+            "colour": ",".join(rgb),
+        }
+        vba = material_vba(
+            mat["name"], mat["epsilon"], mat["mu"], mat["kappa"], mat["tand"],
+            rgb, mat["folder"])
+
+        def apply():
+            self._project_data.setdefault("materials", []).append(mat)
+            append_history(self._archive, f"define material: {mat['name']}", vba)
+            self._refresh_geometry()
+
+        self._mutate(f"material {mat['name']}", apply)
+        self.message_win.info(f"Material {mat['name']}")
+
+    def _on_new_component(self) -> None:
+        name = component_dialog(self)
+        if not name:
+            return
+        self._add_component(name.replace("\\", "/"))
+
+    def _add_component(self, name: str) -> None:
+        name = (name or "").replace("\\", "/")
+        if not name:
+            return
+        if name in self._component_folders():
+            self.message_win.warn(f"Component {name} already exists.")
+            return
+
+        def apply():
+            empties = self._project_data.setdefault("empty_components", [])
+            if name not in empties:
+                empties.append(name)
+            append_component_new(self._archive, name)
+            self._refresh_geometry()
+
+        self._mutate(f"new component {name}", apply)
+        self.message_win.info(f"Component {name}")
+
     def _component_folders(self) -> list:
         seen, folders = set(), []
+        for name in (self._project_data or {}).get("empty_components") or []:
+            if name and name not in seen:
+                seen.add(name)
+                folders.append(name)
         for comp in (self._project_data or {}).get("components") or []:
             path, _solid = split_solid_path(comp.get("name", ""))
             key = "/".join(path)
@@ -971,6 +1181,20 @@ class CSTMainWindow(QMainWindow):
         if not names:
             return
         comps = (self._project_data or {}).get("components") or []
+        folder = names[0] if len(names) == 1 else None
+        if kind in ("collection", "folder") and folder and not any(
+                (c.get("name") or "").startswith(folder + ":")
+                or (c.get("name") or "").startswith(folder + "/")
+                for c in comps):
+            def apply_empty():
+                empties = self._project_data.setdefault("empty_components", [])
+                self._project_data["empty_components"] = [
+                    e for e in empties if e != folder]
+                append_component_delete(self._archive, folder)
+                self._refresh_geometry()
+            self._mutate(f"delete component {folder}", apply_empty)
+            self.message_win.info(f"Deleted component {folder}")
+            return
         remain = [c for c in comps if c.get("name") not in names]
         if len(remain) == len(comps) and kind not in ("solid", "component",
                                                       "collection", "group"):
@@ -1880,6 +2104,88 @@ class CSTMainWindow(QMainWindow):
                 "material": mat_m.group(1) if mat_m else "PEC",
                 "bounds": (cx - r, cx + r, cy - r, cy + r, zmin, zmax),
             })
+
+        def _comp(name):
+            for c in result["components"]:
+                if c.get("name") == name:
+                    return c
+            return None
+
+        for m in re.finditer(
+                r'Solid\.(Add|Subtract|Intersect)\s+"([^"]+)"\s*,\s*"([^"]+)"',
+                text):
+            op, target, tool = m.group(1).lower(), m.group(2), m.group(3)
+            a, b = _comp(target), _comp(tool)
+            if a is None:
+                continue
+            if op == "add" and a.get("bounds") and b and b.get("bounds"):
+                a["bounds"] = union_bounds(a["bounds"], b["bounds"])
+            elif op == "intersect" and a.get("bounds") and b and b.get("bounds"):
+                inter = intersect_bounds(a["bounds"], b["bounds"])
+                if inter:
+                    a["bounds"] = inter
+            result["components"] = [
+                c for c in result["components"] if c.get("name") != tool]
+
+        for block in re.findall(r"With Transform\s+(.*?)End With", text, re.S):
+            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+            kind_m = re.search(r'\.Transform\s+"[^"]*"\s*,\s*"([^"]+)"', block)
+            if not name_m or not kind_m:
+                continue
+            comp = _comp(name_m.group(1))
+            if comp is None or not comp.get("bounds"):
+                continue
+            op = kind_m.group(1).lower()
+            origin = bounds_center(comp["bounds"])
+            try:
+                if op == "translate":
+                    vec = re.search(
+                        r'\.Vector\s+"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"',
+                        block)
+                    if not vec:
+                        continue
+                    fn = translate_fn(float(vec.group(1)), float(vec.group(2)),
+                                      float(vec.group(3)))
+                elif op == "rotate":
+                    ang = re.search(
+                        r'\.Angle\s+"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"',
+                        block)
+                    if not ang:
+                        continue
+                    ax, ay, az = (float(ang.group(i)) for i in range(1, 4))
+                    if abs(ax) >= abs(ay) and abs(ax) >= abs(az):
+                        fn = rotate_fn("x", ax, origin)
+                    elif abs(ay) >= abs(az):
+                        fn = rotate_fn("y", ay, origin)
+                    else:
+                        fn = rotate_fn("z", az, origin)
+                elif op == "mirror":
+                    nrm = re.search(
+                        r'\.PlaneNormal\s+"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"',
+                        block)
+                    axis = "x"
+                    if nrm:
+                        nx, ny, nz = (float(nrm.group(i)) for i in range(1, 4))
+                        axis = "x" if abs(nx) >= abs(ny) and abs(nx) >= abs(nz) else (
+                            "y" if abs(ny) >= abs(nz) else "z")
+                    fn = mirror_fn(axis, origin)
+                elif op == "scale":
+                    sc = re.search(
+                        r'\.ScaleFactor\s+"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"',
+                        block)
+                    if not sc:
+                        continue
+                    fn = scale_fn(origin[0], origin[1], origin[2],
+                                  float(sc.group(1)), float(sc.group(2)),
+                                  float(sc.group(3)))
+                else:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            updated = transform_component(comp, fn)
+            comp["bounds"] = updated.get("bounds")
+            if updated.get("mesh"):
+                comp["mesh"] = updated["mesh"]
 
         # Imported SAT/SAB solids are filled later from the .sab body AABBs.
         # Do not stamp the field-monitor subvolume onto every solid — that is
