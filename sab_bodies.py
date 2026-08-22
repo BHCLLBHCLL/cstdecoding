@@ -437,6 +437,9 @@ _SURF_TYPES = frozenset({
 
 
 def _coedge_next(ents, base, ce):
+    """Return the next coedge in the loop via hardcoded ptrs[0] (standard ACIS layout)."""
+    if ce is None:
+        return None
     ptrs = _payload_ptrs(ce)
     nxt = _resolve(ents, base, ptrs[0] if ptrs else None)
     if nxt is not None and nxt.get("type") == "coedge":
@@ -445,6 +448,9 @@ def _coedge_next(ents, base, ce):
 
 
 def _coedge_prev(ents, base, ce):
+    """Return the previous coedge in the loop via hardcoded ptrs[1] (standard ACIS layout)."""
+    if ce is None:
+        return None
     ptrs = _payload_ptrs(ce)
     prv = _resolve(ents, base, ptrs[1] if len(ptrs) > 1 else None)
     if prv is not None and prv.get("type") == "coedge":
@@ -453,10 +459,30 @@ def _coedge_prev(ents, base, ce):
 
 
 def _coedge_edge(ents, base, ce, end=None):
+    """Return the edge referenced by a coedge entity.
+
+    In the most common ACIS layout the edge sits at ptrs[3].  For records
+    that embed the edge in alternative slots (e.g. ptrs[2]) we fall back to
+    scanning the remaining pointer slots, and finally to a reverse-reference
+    scan of the body's edge entities.  This preserves historic behaviour for
+    standard-layout records while robustly handling layout variants used by
+    some newer/more complex solid bodies.
+    """
+    if ce is None:
+        return None
     ptrs = _payload_ptrs(ce)
+    # Primary / standard slot.
     edge = _resolve(ents, base, ptrs[3] if len(ptrs) > 3 else None)
     if edge is not None and edge.get("type") == "edge":
         return edge
+    # Fallback A: scan other pointer slots for an edge entity.
+    for i, p in enumerate(ptrs):
+        if i == 3:
+            continue  # already checked above
+        cand = _resolve(ents, base, p)
+        if cand is not None and cand.get("type") == "edge":
+            return cand
+    # Fallback B: reverse-reference scan across the body entity range.
     if end is None:
         return None
     for e in ents[base:end]:
@@ -468,8 +494,120 @@ def _coedge_edge(ents, base, ce, end=None):
     return None
 
 
+def _collect_loop_coedges(ents, base, loop, end) -> list:
+    """Return every coedge in ents[base:end] that points (by entity identity)
+    to the given loop record via any of its pointer slots.
+
+    Identity resolution is used intentionally instead of raw integer matching
+    because small integer values can appear in non-pointer fields (e.g. surface
+    or attribute indices) and would otherwise produce false positives that
+    pull unrelated coedges from adjacent faces into the geometric stitch.
+    """
+    if loop is None or end is None:
+        return []
+    out = []
+    seen = set()
+    scan_end = end if end is not None else min(base + 4096, len(ents))
+    for j in range(base, scan_end):
+        e = ents[j]
+        if e.get("type") != "coedge":
+            continue
+        eid = id(e)
+        if eid in seen:
+            continue
+        for p in _payload_ptrs(e):
+            if _resolve(ents, base, p) is loop:
+                seen.add(eid)
+                out.append(e)
+                break
+    return out
+
+
+def _chain_edges_by_geometry(edges: list, max_gap: float = 0.1):
+    """
+    Chain a list of edge samples (each a list of 2+ 3D points) into a single
+    polyline by matching end[i] ≈ start[j] geometrically. Returns (poly, closed).
+    Each edge is allowed to be reversed to continue the chain.
+    """
+    if not edges:
+        return [], False
+    # Work on copies; we will reverse in place as needed.
+    working = [list(e) for e in edges if len(e) >= 2]
+    if not working:
+        return [], False
+
+    def close(a, b):
+        return _dist(a, b) <= max_gap
+
+    used = [False] * len(working)
+    # Start with first edge
+    used[0] = True
+    poly = list(working[0])
+    count = 1
+    while count < len(working):
+        anchor_end = poly[-1]
+        anchor_start = poly[0]
+        found = False
+        # Try to append to the end
+        for i in range(1, len(working)):
+            if used[i]:
+                continue
+            e = working[i]
+            if close(anchor_end, e[0]):
+                poly.extend(e[1:])
+                used[i] = True
+                found = True
+                break
+            if close(anchor_end, e[-1]):
+                # reverse before appending
+                poly.extend(reversed(e[:-1]))
+                used[i] = True
+                found = True
+                break
+        if found:
+            count += 1
+            continue
+        # Try to prepend to the start (only if chain hasn't closed yet)
+        closed_here = close(poly[0], poly[-1])
+        if closed_here:
+            break
+        for i in range(1, len(working)):
+            if used[i]:
+                continue
+            e = working[i]
+            if close(anchor_start, e[-1]):
+                poly = list(e) + poly[1:]
+                used[i] = True
+                found = True
+                break
+            if close(anchor_start, e[0]):
+                poly = list(reversed(e)) + poly[1:]
+                used[i] = True
+                found = True
+                break
+        if found:
+            count += 1
+        else:
+            # Cannot extend further; remaining edges may be disjoint holes or different loops
+            break
+    # Close if endpoints close enough
+    poly = _dedup_poly(poly)
+    closed = len(poly) >= 3 and _loop_is_closed(poly)
+    return _strip_spikes(poly), closed
+
+
 def _walk_loop(ents, base, loop, end=None) -> tuple[list, bool]:
-    """Return (polyline, closed).  Stop at non-coedges; do not fill gaps."""
+    """Return (polyline, closed).
+
+    Walk the coedge chain via pointer fields first (the fast, standard-layout
+    path).  If that yields a closed loop we return it immediately.  Otherwise,
+    fall back to collecting every coedge that references this loop and
+    stitching their edge samples together purely by geometric end-point
+    continuity.  The geometric fallback is only used when it produces a
+    strictly better result (closed AND strictly longer than the pointer
+    walk), ensuring bodies that rely on the standard ACIS layout never
+    regress while variant-layout loops are still recovered.
+    """
     if loop is None or loop["type"] != "loop":
         return [], False
     ptrs = _payload_ptrs(loop)
@@ -506,7 +644,33 @@ def _walk_loop(ents, base, loop, end=None) -> tuple[list, bool]:
         if len(samples) >= 2:
             poly = _join_samples(poly, samples)
     closed = _loop_is_closed(poly)
-    return _strip_spikes(_dedup_poly(poly)), closed
+    poly = _strip_spikes(_dedup_poly(poly))
+    # Fast path: pointer walk produced a closed, usable loop → keep it.
+    if closed and len(poly) >= 3:
+        return poly, closed
+    # Geometric fallback: stitch all edges in the loop by continuity.
+    if end is None:
+        return poly, closed
+    coedges = _collect_loop_coedges(ents, base, loop, end)
+    edges = []
+    for c in coedges:
+        samples = _sample_edge(ents, base, _coedge_edge(ents, base, c, end))
+        if len(samples) >= 2:
+            edges.append(samples)
+    if not edges:
+        return poly, closed
+    geom_poly, geom_closed = _chain_edges_by_geometry(edges)
+    # Use the geometry polyline only when it is unambiguously superior:
+    # closed AND strictly more points than the pointer walk produced.  This
+    # guard is conservative by design — it prevents pointer-walk regressions
+    # on bodies that use the standard ACIS layout.
+    if geom_closed and len(geom_poly) > len(poly):
+        return geom_poly, geom_closed
+    # Geometry poly was not strictly better — fall back to whichever is
+    # longer (prefer a partial pointer walk to an even worse geometry chain).
+    if len(geom_poly) > len(poly):
+        return geom_poly, geom_closed
+    return poly, closed
 
 
 def _loop_is_closed(poly, snap: float = 0.05) -> bool:
@@ -902,11 +1066,33 @@ def _triangulate_plane(polys: list) -> list:
     outer = usable[outer_i]
     holes = [p for i, p in enumerate(usable) if i != outer_i]
     origin, u, v = _plane_basis(outer)
+    # Normalize winding: outer must be counter-clockwise in 2-D (face normal
+    # pointing out of the plane); holes must be clockwise (opposite).  When
+    # the surface-normal alignment step (upstream) reversed an entire poly
+    # list in lockstep it flipped outer AND holes together.  We then flip
+    # the outer back to CCW here.  To keep holes opposite — which is what
+    # _delaunay_in_region / _reject_hole_overlap rely on — every hole that
+    # now has the same 2-D winding sign as outer is also flipped.
     outer2 = _project_poly(outer, origin, u, v)
+    outer_sign = 1.0
     if _poly_area2(outer2) < 0:
         outer = list(reversed(outer))
         outer2 = list(reversed(outer2))
-    hole2d = [_project_poly(h, origin, u, v) for h in holes]
+        outer_sign = -1.0
+    hole2d_raw = [_project_poly(h, origin, u, v) for h in holes]
+    fixed_holes = []
+    fixed_hole2d = []
+    for h, h2 in zip(holes, hole2d_raw):
+        same_sign = (_poly_area2(h2) >= 0) if (outer_sign > 0) else (_poly_area2(h2) < 0)
+        if same_sign:
+            # Hole currently has same winding as outer — flip it so it's
+            # opposite (interior boundary for subtraction).
+            h = list(reversed(h))
+            h2 = list(reversed(h2))
+        fixed_holes.append(h)
+        fixed_hole2d.append(h2)
+    holes = fixed_holes
+    hole2d = fixed_hole2d
     n = len(outer)
 
     # Simple concave faces (PCB outlines): constrained earclip stays inside
@@ -946,6 +1132,118 @@ def _face_surface(ents, base, face):
     return None
 
 
+def _filter_edges_on_plane(edges_sampled: list, surf, eps: float = 0.05) -> list:
+    """Keep only sampled edges whose endpoints all lie on a planar surface.
+
+    Used to drop coedges that reference a loop structurally (adjacent side-wall
+    faces share loop back-references in some ACIS layouts) but whose geometry
+    belongs to a different face. Filtering by plane membership prior to
+    geometric stitching keeps outer / inner / adjacent contours from being
+    merged together.
+    """
+    if surf is None or surf.get("type") != "plane":
+        return list(edges_sampled)
+    vecs = _geom_vecs(surf)
+    if len(vecs) < 3:
+        return list(edges_sampled)
+    origin = np.asarray(vecs[0], dtype=float)
+    axis = _unit(np.asarray(vecs[1], dtype=float))
+    kept = []
+    for samples in edges_sampled:
+        if len(samples) < 2:
+            continue
+        arr = np.asarray(samples, dtype=float)
+        dists = np.abs(np.dot(arr - origin, axis))
+        if dists.max() <= eps:
+            kept.append(samples)
+    return kept
+
+
+def _plane_edges_convex_hull(plane_edges: list, surf) -> list:
+    """Return the 2-D convex hull of all on-plane edge endpoints as a 3-D polyline.
+
+    Used as a last-resort outer contour when pointer walks and geometric
+    stitching both yield a fragmented outer (the per-coedge identity scan
+    misses orphan edges on variant-layout ACIS records, and the separate
+    fragments do not chain into a single closed loop because the shared
+    straight boundary between the outer and an inner hole was encoded
+    without a dedicated top-plate edge record).  The convex hull is a
+    conservative outer boundary and the identity-recovered hole loops are
+    preserved exactly, so tessellation stays inside the true CAD shape.
+    """
+    if not plane_edges or surf is None or surf.get("type") != "plane":
+        return []
+    vecs = _geom_vecs(surf)
+    if len(vecs) < 3:
+        return []
+    s_origin = np.asarray(vecs[0], dtype=float)
+    s_axis = _unit(np.asarray(vecs[1], dtype=float))
+    tmp_s = np.array([1.0, 0.0, 0.0]) if abs(s_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u_s = _unit(np.cross(s_axis, tmp_s))
+    v_s = np.cross(s_axis, u_s)
+    pts3 = []
+    for e in plane_edges:
+        for p in e:
+            pts3.append(np.asarray(p, dtype=float))
+    if not pts3:
+        return []
+    arr = np.array(pts3)
+    arr = np.unique(np.round(arr, 8), axis=0)
+    p2 = np.column_stack([np.dot(arr - s_origin, u_s), np.dot(arr - s_origin, v_s)])
+    # Graham scan for 2D convex hull
+    order = sorted(range(len(p2)), key=lambda i: (p2[i, 0], p2[i, 1]))
+    if len(order) < 3:
+        return [arr[i].tolist() for i in order]
+
+    def cross(o, a, b):
+        return (p2[a, 0] - p2[o, 0]) * (p2[b, 1] - p2[o, 1]) - (p2[a, 1] - p2[o, 1]) * (p2[b, 0] - p2[o, 0])
+
+    lower = []
+    for i in order:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], i) <= 0:
+            lower.pop()
+        lower.append(i)
+    upper = []
+    for i in reversed(order):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], i) <= 0:
+            upper.pop()
+        upper.append(i)
+    hull_idx = lower[:-1] + upper[:-1]
+    if len(hull_idx) < 3:
+        return [arr[i].tolist() for i in order[:3]]
+    return [arr[i].tolist() for i in hull_idx]
+
+
+def _collect_all_body_plane_edges(ents, base, end, surf, eps: float = 0.005) -> list:
+    """Scan every edge record in [base:end] and keep samples on the plane.
+
+    Unlike the coedge-guided identity path, this does not rely on coedge
+    parent lookups at all. It therefore recovers variant-layout edges whose
+    parent records have been mis-classified by the type-name mapping or
+    whose pointers do not resolve into coedge entities via the standard
+    body-relative base offset.
+    """
+    if end is None or surf is None or surf.get("type") != "plane":
+        return []
+    vecs = _geom_vecs(surf)
+    if len(vecs) < 3:
+        return []
+    origin = np.asarray(vecs[0], dtype=float)
+    axis = _unit(np.asarray(vecs[1], dtype=float))
+    edges_out = []
+    for e in ents[base:end]:
+        if e.get("type") != "edge":
+            continue
+        samples = _sample_edge(ents, base, e)
+        if len(samples) < 2:
+            continue
+        arr = np.asarray(samples, dtype=float)
+        dists = np.abs(np.dot(arr - origin, axis))
+        if dists.max() <= eps:
+            edges_out.append(samples)
+    return edges_out
+
+
 def _tessellate_face(ents, base, face, end=None) -> list:
     ptrs = _payload_ptrs(face)
     surf = _face_surface(ents, base, face)
@@ -954,6 +1252,294 @@ def _tessellate_face(ents, base, face, end=None) -> list:
     loops = _iter_loops(ents, base, _resolve(ents, base, ptrs[1]))
     walked = [_walk_loop(ents, base, lp, end) for lp in loops]
     polys = [p for p, closed in walked if closed and len(p) >= 3]
+
+    if surf["type"] == "plane" and end is not None:
+        def _area2_of(poly3d) -> float:
+            if not poly3d or len(poly3d) < 3:
+                return 0.0
+            pts = np.asarray(poly3d, dtype=float)
+            v0 = pts[1] - pts[0]
+            v1 = pts[2] - pts[0]
+            nrm = np.cross(v0, v1)
+            if np.linalg.norm(nrm) < _EPS:
+                return 0.0
+            nrm = _unit(nrm)
+            tmp = np.array([1.0, 0.0, 0.0]) if abs(nrm[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+            u = _unit(np.cross(nrm, tmp))
+            v = np.cross(nrm, u)
+            origin = pts[0]
+            p2 = [(float(np.dot(p - origin, u)), float(np.dot(p - origin, v))) for p in pts]
+            return abs(_poly_area2(p2))
+
+        # Per-loop rebuild: pointer walk is always preferred.  If it didn't
+        # yield a closed polygon (or produced a trivially short one because
+        # some coedges on this loop use variant pointer layouts) we collect
+        # every coedge that references the loop record by entity identity,
+        # drop coedges whose geometry lives on a different face (plane
+        # membership filter), and stitch the survivors geometrically.  This
+        # stays local to each loop, so small cuboid can faces are not
+        # polluted by edges from neighbouring cans that happen to share the
+        # same z-level.
+        def _try_close_rect(poly, min_pts=4):
+            """If poly is an open chain whose 2-D convex hull has 4 vertices
+            (i.e. the open chain covers three sides of a planar rectangle),
+            append the first point to close it.  Recovers variant-layout
+            can-step faces (sh_cans:top mid-platform / top-rim) whose walks
+            and geometric chains both miss the last edge due to pointer-
+            layout ambiguity."""
+            if len(poly) < min_pts:
+                return None
+            try:
+                origin, u, v = _plane_basis(poly)
+                pts2 = []
+                for p in poly:
+                    d = np.asarray(p, dtype=float) - origin
+                    pts2.append((float(np.dot(d, u)), float(np.dot(d, v))))
+                uniq = sorted(set(pts2))
+                if len(uniq) < 3:
+                    return None
+                def _cross(o, a, b):
+                    return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+                lower = []
+                for pt in uniq:
+                    while len(lower) >= 2 and _cross(lower[-2], lower[-1], pt) <= 1e-9:
+                        lower.pop()
+                    lower.append(pt)
+                upper = []
+                for pt in reversed(uniq):
+                    while len(upper) >= 2 and _cross(upper[-2], upper[-1], pt) <= 1e-9:
+                        upper.pop()
+                    upper.append(pt)
+                hull = lower[:-1] + upper[:-1]
+                if len(hull) < 3:
+                    return None
+                # Accept if hull has exactly 3 or 4 distinct vertices and
+                # closing the chain spans a side comparable to the hull size.
+                dx = max(x for x, y in hull) - min(x for x, y in hull)
+                dy = max(y for x, y in hull) - min(y for x, y in hull)
+                hull_span = max(dx, dy)
+                if hull_span <= 0:
+                    return None
+                gap_vec = np.asarray(poly[0], dtype=float) - np.asarray(poly[-1], dtype=float)
+                gap_len = float(np.linalg.norm(gap_vec))
+                if gap_len <= 1e-6 or gap_len > 3.0 * hull_span:
+                    return None
+                closed_poly = list(poly) + [poly[0]]
+                return closed_poly
+            except Exception:
+                return None
+
+        rebuilt_polys = []
+        for walk_poly, walk_closed in walked:
+            if walk_closed and len(walk_poly) >= 3:
+                rebuilt_polys.append(walk_poly)
+                continue
+            lp = loops[len(rebuilt_polys)]
+            coedges = _collect_loop_coedges(ents, base, lp, end)
+            edge_samples = []
+            for c in coedges:
+                s = _sample_edge(ents, base, _coedge_edge(ents, base, c, end))
+                if len(s) >= 2:
+                    edge_samples.append(s)
+            edge_samples = _filter_edges_on_plane(edge_samples, surf)
+            used_fallback = False
+            best_poly, best_closed = None, False
+            if edge_samples:
+                geom_poly, geom_closed = _chain_edges_by_geometry(edge_samples)
+                if geom_closed and len(geom_poly) >= 3 and (not walk_closed or len(geom_poly) > len(walk_poly)):
+                    best_poly, best_closed = geom_poly, True
+                    used_fallback = True
+                elif len(geom_poly) >= 4 and not geom_closed:
+                    rect_poly = _try_close_rect(geom_poly, min_pts=4)
+                    if rect_poly is not None:
+                        best_poly, best_closed = rect_poly, True
+                        used_fallback = True
+            if not used_fallback and walk_closed and len(walk_poly) >= 3:
+                rebuilt_polys.append(walk_poly)
+                continue
+            if not used_fallback and len(walk_poly) >= 4 and not walk_closed:
+                rect_poly = _try_close_rect(walk_poly, min_pts=4)
+                if rect_poly is not None:
+                    best_poly, best_closed = rect_poly, True
+                    used_fallback = True
+            if best_poly is not None and best_closed and len(best_poly) >= 4:
+                rebuilt_polys.append(best_poly)
+                used_fallback = True
+            if not used_fallback and walk_closed and len(walk_poly) >= 3:
+                rebuilt_polys.append(walk_poly)
+        polys = rebuilt_polys if rebuilt_polys else polys
+
+        # Large-face hull fallback: when every loop failed to recover a
+        # closed outer boundary for a face that (judging by its own loop
+        # coedge endpoints) spans well over a hundred mm², we assume we are
+        # on a PCB plate or can-lid top and build a conservative outer
+        # boundary via the convex hull of every body edge lying on this
+        # plane.  Existing small recovered loops are kept verbatim as holes.
+        # Tight thresholds deliberately avoid activating this on small
+        # box / can walls, and the reference area is computed from THIS
+        # FACE'S OWN loop coedges so multi-can compound bodies do not see
+        # their individual small can faces trigger hull fallback just
+        # because a neighbour can happens to share the same z-level.
+        face_plane_edges = []
+        for lp in loops:
+            coedges = _collect_loop_coedges(ents, base, lp, end)
+            for c in coedges:
+                s = _sample_edge(ents, base, _coedge_edge(ents, base, c, end))
+                if len(s) >= 2:
+                    face_plane_edges.append(s)
+        face_plane_edges = _filter_edges_on_plane(face_plane_edges, surf)
+        ref_area = 0.0
+        if face_plane_edges:
+            mids = np.array([(np.asarray(e[0]) + np.asarray(e[-1])) * 0.5 for e in face_plane_edges])
+            if len(mids) >= 2:
+                vecs_surf = _geom_vecs(surf)
+                if len(vecs_surf) >= 3:
+                    s_origin = np.asarray(vecs_surf[0], dtype=float)
+                    s_axis = _unit(np.asarray(vecs_surf[1], dtype=float))
+                    tmp_s = np.array([1.0, 0.0, 0.0]) if abs(s_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+                    u_s = _unit(np.cross(s_axis, tmp_s))
+                    v_s = np.cross(s_axis, u_s)
+                    mids2 = np.column_stack([np.dot(mids - s_origin, u_s), np.dot(mids - s_origin, v_s)])
+                    ref_area = float((mids2[:, 0].max() - mids2[:, 0].min()) * (mids2[:, 1].max() - mids2[:, 1].min()))
+        body_plane_edges = _collect_all_body_plane_edges(ents, base, end, surf)
+        current_max_area = max((_area2_of(p) for p in polys), default=0.0)
+        # Consistency guard: compute a face-local bbox area from the pointer
+        # walks and rebuilt polygons.  Variant-layout coedges sometimes
+        # cause _collect_loop_coedges to grab coedges from neighbouring
+        # faces (they share loop-record references indirectly).  That
+        # inflates ref_area far beyond the real face extent — the hull
+        # fallback then builds a giant 40×20 mm hull for a ~2×1 mm can-step
+        # face and produces zero valid triangles.  Require that ref_area is
+        # at most a moderate multiple of the walk-bbox area before firing.
+        walk_bbox_area = 0.0
+        try:
+            all_p = []
+            for wp, wc in walked:
+                all_p.extend(wp)
+            all_p.extend([pt for poly in polys for pt in poly])
+            if len(all_p) >= 3:
+                vecs_surf2 = _geom_vecs(surf)
+                if len(vecs_surf2) >= 3:
+                    s_o2 = np.asarray(vecs_surf2[0], dtype=float)
+                    s_a2 = _unit(np.asarray(vecs_surf2[1], dtype=float))
+                    tmp2 = np.array([1.0, 0.0, 0.0]) if abs(s_a2[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+                    u2 = _unit(np.cross(s_a2, tmp2))
+                    v2 = np.cross(s_a2, u2)
+                    arr = np.asarray(all_p, dtype=float)
+                    x2 = np.dot(arr - s_o2, u2)
+                    y2 = np.dot(arr - s_o2, v2)
+                    wba = (float(x2.max()) - float(x2.min())) * (float(y2.max()) - float(y2.min()))
+                    walk_bbox_area = max(wba, 1e-6)
+        except Exception:
+            walk_bbox_area = 0.0
+        polys_bbox_area = walk_bbox_area  # already includes union of polys & walks
+        current_large_poly_ok = current_max_area < 0.30 * ref_area
+        polys_too_small_for_ref = ref_area > 150.0 and polys_bbox_area < 0.50 * ref_area
+        if (ref_area_ok and ref_area > 150.0 and (current_large_poly_ok or polys_too_small_for_ref)
+                and len(body_plane_edges) >= 12 and len(face_plane_edges) >= 6):
+            full_edges = body_plane_edges
+            if full_edges:
+                hull = _plane_edges_convex_hull(full_edges, surf)
+                hull = _strip_spikes(_dedup_poly(hull))
+                if len(hull) >= 3:
+                    hull_area = _abs_loop_area(hull)
+                    # Existing identity-recovered loops are always kept as
+                    # explicit holes.  Then sweep every body-plane edge via
+                    # endpoint stitching to catch any additional closed
+                    # interior contours that identity-guided resolution
+                    # missed (variant pointer layouts).  Any closed loop
+                    # whose area is a small fraction of the hull area is
+                    # appended to the hole list; the outer boundary can
+                    # produce a duplicate large closed contour via the
+                    # same sweep so a 70 % area guard drops it.
+                    hole_polys = []
+                    for p in polys:
+                        pa = _abs_loop_area(p)
+                        # Only treat pre-recovered polygons as holes when
+                        # they are clearly interior: small area relative to
+                        # the convex hull AND bounded well inside the hull's
+                        # 2-D footprint.  Partial outer-contour fragments
+                        # recovered from geom-chain walks sit on the hull
+                        # boundary and can be 20-50 % of hull area — we must
+                        # NOT subtract them as holes or the plate face ends
+                        # up with giant interior "bites" cut out of it.
+                        if pa < 0.30 * hull_area and pa > 0.001:
+                            hole_polys.append(p)
+                    # Sweep body-plane edges repeatedly with bidirectional
+                    # geometric stitching; each pass pulls out one stitched
+                    # contour (outer perimeter, interior holes, or disjoint
+                    # fragments).  Closed contours smaller than the hull are
+                    # treated as holes; the first large (≈hull-size) closed
+                    # contour is skipped because it duplicates the outer hull
+                    # already in hand.
+                    remaining_edges = [list(e) for e in full_edges if len(e) >= 2]
+                    for _sweep_pass in range(20):
+                        if not remaining_edges:
+                            break
+                        chain, chain_closed = _chain_edges_by_geometry(remaining_edges, max_gap=0.1)
+                        if not chain:
+                            break
+                        chain_key = set()
+                        for cp in chain:
+                            k = (round(cp[0], 3), round(cp[1], 3), round(cp[2], 3))
+                            chain_key.add(k)
+
+                        def _on_chain(pt, tol2=0.05 ** 2):
+                            k0 = (round(pt[0], 3), round(pt[1], 3), round(pt[2], 3))
+                            if k0 in chain_key:
+                                return True
+                            for cx, cy, cz in chain_key:
+                                ddx = pt[0] - cx
+                                ddy = pt[1] - cy
+                                ddz = pt[2] - cz
+                                if ddx * ddx + ddy * ddy + ddz * ddz < tol2:
+                                    return True
+                            return False
+
+                        kept = []
+                        for e in remaining_edges:
+                            if len(e) < 2:
+                                continue
+                            if not (_on_chain(e[0]) and _on_chain(e[-1])):
+                                kept.append(e)
+                        if len(kept) == len(remaining_edges):
+                            break
+                        remaining_edges = kept
+                        if chain_closed and len(chain) >= 3:
+                            cand = _strip_spikes(_dedup_poly(chain))
+                            if len(cand) >= 3:
+                                cand_area = _abs_loop_area(cand)
+                                if cand_area < 0.7 * hull_area and cand_area > 0.01:
+                                    hole_polys.append(cand)
+                    polys = [hull] + hole_polys
+
+    # Align the outer (first / largest) polygon winding to the surface normal
+    # so triangles produced by _triangulate_plane face out of the ACIS solid
+    # regardless of whether the input polygons came from a pointer walk, a
+    # geometric stitch, or a synthetic convex hull.  Synthetic loops (hull
+    # fallback, variant-layout recovered holes) don't carry ACIS sense
+    # information and can end up with reversed winding relative to the
+    # surface — back-face culling then drops those triangles completely,
+    # which is why sh_cans:top used to appear as a handful of stray side
+    # wires with no visible plate face in the GUI.
+    if polys and surf is not None:
+        try:
+            areas_p = [_abs_loop_area(p) for p in polys if len(p) >= 3]
+            if areas_p:
+                outer_p = polys[int(np.argmax(areas_p))]
+                if len(outer_p) >= 3:
+                    pn = _poly_normal(outer_p)
+                    if np.linalg.norm(pn) >= _EPS:
+                        pn = _unit(pn)
+                        sn = None
+                        vecs_s = _geom_vecs(surf)
+                        if len(vecs_s) >= 2:
+                            sn = _unit(np.asarray(vecs_s[1], dtype=float))
+                        if sn is not None and float(np.dot(pn, sn)) < -0.3:
+                            polys = [list(reversed(p)) for p in polys]
+        except Exception:
+            pass
+
     if surf["type"] == "cone":
         vecs = _geom_vecs(surf)
         if len(vecs) >= 3:
