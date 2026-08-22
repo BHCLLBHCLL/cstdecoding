@@ -1432,6 +1432,10 @@ def _tessellate_face(ents, base, face, end=None) -> list:
                     walk_bbox_area = max(wba, 1e-6)
         except Exception:
             walk_bbox_area = 0.0
+        ref_area_ok = True
+        if walk_bbox_area > 1e-3 and ref_area > 100.0:
+            if ref_area > 30.0 * walk_bbox_area:
+                ref_area_ok = False
         polys_bbox_area = walk_bbox_area  # already includes union of polys & walks
         current_large_poly_ok = current_max_area < 0.30 * ref_area
         polys_too_small_for_ref = ref_area > 150.0 and polys_bbox_area < 0.50 * ref_area
