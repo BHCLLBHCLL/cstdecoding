@@ -28,6 +28,9 @@ from PyQt5.QtWidgets import (
 from cst_parser import (
     CstParseError, open_cst, write_cst, new_project_files, read_entry,
 )
+from cst_project import (
+    UndoStack, resolve_parameters, snapshot_state, write_parameters,
+)
 from cst_icons import AppIcons
 from cst_panes import (
     CST3DCanvas, CST3DViewport, MessageWindow, NavigationTree, PaneFrame,
@@ -68,6 +71,8 @@ class CSTMainWindow(QMainWindow):
         self._hidden_parts: set[str] = set()
         self._drawing_mode = "Shading"
         self._ribbon_minimized = False
+        self._undo = UndoStack()
+        self._restoring = False
         self._build_ui()
         self._apply_style()
         if path:
@@ -99,6 +104,8 @@ class CSTMainWindow(QMainWindow):
                                QKeySequence("Ctrl+Shift+S"), "save")
         self.act_export = act("&Export…", self._on_export, None, "export")
         self.act_exit = act("E&xit", self.close, QKeySequence.Quit)
+        self.act_undo = act("&Undo", self._on_undo, QKeySequence.Undo, "undo")
+        self.act_redo = act("&Redo", self._on_redo, QKeySequence.Redo, "redo")
         self.act_fit = act("&Fit", self._on_fit, "F", "fit")
         self.act_about = act("&About CST GUI", self._on_about, None, "help")
 
@@ -116,23 +123,12 @@ class CSTMainWindow(QMainWindow):
         qat_l = QHBoxLayout(qat)
         qat_l.setContentsMargins(6, 2, 6, 2)
         qat_l.setSpacing(3)
-        for action in (self.act_open, self.act_save):
+        for action in (self.act_open, self.act_save, self.act_undo, self.act_redo):
             btn = QToolButton()
             btn.setDefaultAction(action)
             btn.setAutoRaise(True)
             btn.setIconSize(QSize(20, 20))
             btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-            qat_l.addWidget(btn)
-        for name, icon, slot in (
-                ("Undo", "undo", lambda: self._nyi("Undo")),
-                ("Redo", "redo", lambda: self._nyi("Redo")),
-        ):
-            btn = QToolButton()
-            btn.setIcon(AppIcons.get(icon, 20))
-            btn.setIconSize(QSize(20, 20))
-            btn.setAutoRaise(True)
-            btn.setToolTip(name)
-            btn.clicked.connect(slot)
             qat_l.addWidget(btn)
         qat_l.addStretch(1)
         title = QLabel("CST Studio Suite 2024")
@@ -478,6 +474,7 @@ class CSTMainWindow(QMainWindow):
         self.bottom_tabs = QTabWidget()
         self.bottom_tabs.setObjectName("BottomTabs")
         self.param_list = ParameterList()
+        self.param_list.parameters_changed.connect(self._on_parameters_changed)
         self.progress_panel = ProgressPanel()
         self.bottom_tabs.addTab(self.param_list, "Parameter List")
         self.bottom_tabs.addTab(self.progress_panel, "Progress")
@@ -811,8 +808,10 @@ class CSTMainWindow(QMainWindow):
             new_name = "/".join(folders) + ":" + new_solid
         dup = copy.deepcopy(src)
         dup["name"] = new_name
-        comps.append(dup)
-        self._refresh_geometry()
+        def apply():
+            comps.append(dup)
+            self._refresh_geometry()
+        self._mutate(f"paste {new_name}", apply)
         self.message_win.info(f"Pasted as {new_name}")
 
     def _nav_delete(self, kind: str, name: str) -> None:
@@ -826,10 +825,12 @@ class CSTMainWindow(QMainWindow):
             self._nyi("Delete")
             return
         if self._project_data is not None:
-            self._project_data["components"] = remain
-        for n in names:
-            self._hidden_parts.discard(n)
-        self._refresh_geometry()
+            def apply():
+                self._project_data["components"] = remain
+                for n in names:
+                    self._hidden_parts.discard(n)
+                self._refresh_geometry()
+            self._mutate("delete " + names[0], apply)
         self.message_win.info(
             "Deleted " + (", ".join(n.split(":")[-1] for n in names[:6]))
             + ("…" if len(names) > 6 else ""))
@@ -838,40 +839,44 @@ class CSTMainWindow(QMainWindow):
         if "\n" not in (name or ""):
             return
         old, new = name.split("\n", 1)
-        comps = (self._project_data or {}).get("components") or []
-        if kind == "solid":
-            for comp in comps:
-                if comp.get("name") == old:
-                    comp["name"] = new
-            if old in self._hidden_parts:
-                self._hidden_parts.discard(old)
-                self._hidden_parts.add(new)
-        elif kind in ("collection", "folder", "group"):
-            prefix = old.rstrip("/") + "/"
-            colon = old + ":"
-            for comp in comps:
-                nm = comp.get("name") or ""
-                if nm.startswith(colon):
-                    comp["name"] = new + ":" + nm.split(":", 1)[1]
-                elif nm.startswith(prefix):
-                    comp["name"] = new + nm[len(old):]
-            hidden = set()
-            for n in self._hidden_parts:
-                if n.startswith(colon):
-                    hidden.add(new + ":" + n.split(":", 1)[1])
-                elif n.startswith(prefix):
-                    hidden.add(new + n[len(old):])
-                else:
-                    hidden.add(n)
-            self._hidden_parts = hidden
-        elif kind == "material":
-            for mat in (self._project_data or {}).get("materials") or []:
-                if mat.get("name") == old:
-                    mat["name"] = new
-            for comp in comps:
-                if comp.get("material") == old:
-                    comp["material"] = new
-        self._refresh_geometry()
+
+        def apply():
+            comps = (self._project_data or {}).get("components") or []
+            if kind == "solid":
+                for comp in comps:
+                    if comp.get("name") == old:
+                        comp["name"] = new
+                if old in self._hidden_parts:
+                    self._hidden_parts.discard(old)
+                    self._hidden_parts.add(new)
+            elif kind in ("collection", "folder", "group"):
+                prefix = old.rstrip("/") + "/"
+                colon = old + ":"
+                for comp in comps:
+                    nm = comp.get("name") or ""
+                    if nm.startswith(colon):
+                        comp["name"] = new + ":" + nm.split(":", 1)[1]
+                    elif nm.startswith(prefix):
+                        comp["name"] = new + nm[len(old):]
+                hidden = set()
+                for n in self._hidden_parts:
+                    if n.startswith(colon):
+                        hidden.add(new + ":" + n.split(":", 1)[1])
+                    elif n.startswith(prefix):
+                        hidden.add(new + n[len(old):])
+                    else:
+                        hidden.add(n)
+                self._hidden_parts = hidden
+            elif kind == "material":
+                for mat in (self._project_data or {}).get("materials") or []:
+                    if mat.get("name") == old:
+                        mat["name"] = new
+                for comp in comps:
+                    if comp.get("material") == old:
+                        comp["material"] = new
+            self._refresh_geometry()
+
+        self._mutate(f"rename {old}", apply)
         self.message_win.info(f"Renamed {old} → {new}")
 
     def _nav_object_info(self, kind: str, name: str) -> None:
@@ -926,10 +931,14 @@ class CSTMainWindow(QMainWindow):
         if not ok or not chosen:
             return
         mat = next((m for m in mats if m.get("name") == chosen), None)
-        comp["material"] = chosen
-        if mat and mat.get("colour"):
-            comp["colour"] = mat["colour"]
-        self._refresh_geometry()
+
+        def apply():
+            comp["material"] = chosen
+            if mat and mat.get("colour"):
+                comp["colour"] = mat["colour"]
+            self._refresh_geometry()
+
+        self._mutate(f"assign {chosen}", apply)
         self.message_win.info(f"{name} → material {chosen}")
 
     def _nav_edit_material(self, kind: str, name: str) -> None:
@@ -1015,6 +1024,68 @@ class CSTMainWindow(QMainWindow):
         self._dirty = bool(dirty)
         self._sync_title()
 
+    def _snapshot(self) -> dict:
+        return snapshot_state(self._project_data, self._archive, self._hidden_parts)
+
+    def _restore_snapshot(self, snap: dict) -> None:
+        self._restoring = True
+        try:
+            self._project_data = copy.deepcopy(snap.get("project") or {})
+            self._archive = dict(snap.get("archive") or {})
+            self._hidden_parts = set(snap.get("hidden") or [])
+            self._reload_views()
+            self._mark_dirty(True)
+        finally:
+            self._restoring = False
+
+    def _reload_views(self) -> None:
+        data = self._project_data or {}
+        self.nav_tree.populate_from_project(data)
+        self.nav_tree.set_hidden_names(self._hidden_parts)
+        self.param_list.set_parameters(data.get("parameters") or [])
+        self.progress_panel.set_progress(data.get("progress") or [])
+        self.viewport.render_project(data)
+        self.viewport.set_hidden(self._hidden_parts)
+
+    def _mutate(self, label: str, fn) -> None:
+        if self._restoring:
+            fn()
+            return
+        before = self._snapshot()
+        fn()
+        after = self._snapshot()
+        self._undo.push(
+            lambda s=before: self._restore_snapshot(s),
+            lambda s=after: self._restore_snapshot(s),
+            label)
+        self._mark_dirty(True)
+
+    def _on_undo(self) -> None:
+        if not self._undo.can_undo():
+            self.message_win.info("Nothing to undo.")
+            return
+        label = self._undo.undo()
+        self.message_win.info(f"Undo {label}" if label else "Undo")
+        self.status.showMessage(f"Undo {label}".strip(), 2000)
+
+    def _on_redo(self) -> None:
+        if not self._undo.can_redo():
+            self.message_win.info("Nothing to redo.")
+            return
+        label = self._undo.redo()
+        self.message_win.info(f"Redo {label}" if label else "Redo")
+        self.status.showMessage(f"Redo {label}".strip(), 2000)
+
+    def _on_parameters_changed(self, params: list) -> None:
+        def apply():
+            resolved = resolve_parameters(params)
+            if self._project_data is None:
+                self._project_data = {}
+            self._project_data["parameters"] = resolved
+            write_parameters(self._archive, resolved)
+            self.param_list.set_parameters(resolved)
+        self._mutate("edit parameters", apply)
+
     def _confirm_discard(self) -> bool:
         if not self._dirty:
             return True
@@ -1038,6 +1109,7 @@ class CSTMainWindow(QMainWindow):
         self._current_path = None
         entries = [{"name": n, "content": b} for n, b in files]
         self._apply_loaded_project("untitled.cst", entries, self._eocd_comment)
+        self._undo.clear()
         self._mark_dirty(True)
         self.message_win.info("New project.")
 
@@ -1083,6 +1155,9 @@ class CSTMainWindow(QMainWindow):
             self.message_win.warn("Nothing to save.")
             return False
         try:
+            if self._project_data is not None:
+                write_parameters(
+                    self._archive, self._project_data.get("parameters") or [])
             files = list(self._archive.items())
             write_cst(path, files, comment=self._eocd_comment or None)
             self._current_path = path
@@ -1141,6 +1216,7 @@ class CSTMainWindow(QMainWindow):
             self._apply_loaded_project(path, entries, self._eocd_comment)
             self._status_progress.setValue(100)
             self._current_path = path
+            self._undo.clear()
             self._mark_dirty(False)
             self._add_recent(path)
             self.status.showMessage(f"Loaded {os.path.basename(path)}")

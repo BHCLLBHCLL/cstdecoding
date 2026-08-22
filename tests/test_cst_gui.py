@@ -324,3 +324,58 @@ def test_new_project_save_roundtrip(viewer):
     names = {e["name"].replace("\\", "/") for e in entries}
     assert "Model/3D/Model.mod" in names
     assert "Model/Parameters.json" in names
+
+
+def test_parameter_edit_writeback_undo_save(viewer):
+    import json
+    from pathlib import Path
+    from cst_parser import open_cst
+
+    viewer._on_new()
+    viewer._on_parameters_changed([
+        {"name": "W", "expr": "12", "value": "", "description": "width"},
+        {"name": "half", "expr": "W/2", "value": "", "description": ""},
+    ])
+    assert viewer._dirty
+    recs = json.loads(viewer._archive["Model/Parameters.json"])["parameters"]
+    by_name = {r["name"]: r for r in recs}
+    assert by_name["W"]["expr"] == "12"
+    assert by_name["half"]["value"] == "6"
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert 'MakeSureParameterExists "W", "12"' in mod
+    assert 'MakeSureParameterExists "half", "W/2"' in mod
+    assert viewer.param_list.table.rowCount() == 2
+
+    viewer._on_undo()
+    recs = json.loads(viewer._archive["Model/Parameters.json"])["parameters"]
+    assert recs == []
+    viewer._on_redo()
+    recs = json.loads(viewer._archive["Model/Parameters.json"])["parameters"]
+    assert recs[0]["name"] == "W"
+
+    scratch = Path(__file__).resolve().parent / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    out = scratch / "params_edit.cst"
+    assert viewer._write_project(str(out)) is True
+    _meta, entries = open_cst(out)
+    by = {e["name"].replace("\\", "/"): e["content"] for e in entries}
+    saved = json.loads(by["Model/Parameters.json"])["parameters"]
+    assert saved[0]["expr"] == "12"
+    assert b'MakeSureParameterExists "W", "12"' in by["Model/3D/Model.mod"]
+
+
+def test_undo_delete_restores_solid(viewer):
+    viewer._project_data = {
+        "components": [
+            {"name": "component1:box", "material": "PEC",
+             "bounds": (-1, 1, -1, 1, 0, 1)},
+        ],
+        "materials": [], "groups": [], "parameters": [],
+    }
+    viewer._archive = dict(__import__("cst_parser").new_project_files())
+    viewer._refresh_geometry()
+    viewer._nav_delete("solid", "component1:box")
+    assert viewer._project_data["components"] == []
+    viewer._on_undo()
+    names = {c["name"] for c in viewer._project_data["components"]}
+    assert "component1:box" in names

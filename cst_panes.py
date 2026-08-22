@@ -302,6 +302,8 @@ class PropertyInspector(QWidget):
 class ParameterList(QWidget):
     """CST Parameter List (Name / Expression / Value / Description)."""
 
+    parameters_changed = pyqtSignal(list)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         v = QVBoxLayout(self)
@@ -313,18 +315,88 @@ class ParameterList(QWidget):
         hdr = self.table.horizontalHeader()
         hdr.setStretchLastSection(True)
         hdr.setSectionResizeMode(QHeaderView.Interactive)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setEditTriggers(
+            QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        self.table.itemChanged.connect(self._on_item_changed)
         v.addWidget(self.table)
+        self._block = False
 
     def set_parameters(self, params) -> None:
-        self.table.setRowCount(len(params))
-        for i, rec in enumerate(params):
-            for j, key in enumerate(["name", "expr", "value", "description"]):
-                item = QTableWidgetItem(str(rec.get(key, "")))
-                self.table.setItem(i, j, item)
-        self.table.resizeColumnsToContents()
+        self._block = True
+        try:
+            self.table.setRowCount(len(params))
+            for i, rec in enumerate(params):
+                for j, key in enumerate(["name", "expr", "value", "description"]):
+                    item = QTableWidgetItem(str(rec.get(key, "")))
+                    item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    self.table.setItem(i, j, item)
+            self.table.resizeColumnsToContents()
+        finally:
+            self._block = False
+
+    def parameters(self) -> list:
+        rows = []
+        for i in range(self.table.rowCount()):
+            def cell(col, row=i):
+                it = self.table.item(row, col)
+                return it.text() if it else ""
+            rows.append({
+                "name": cell(0),
+                "expr": cell(1),
+                "value": cell(2),
+                "description": cell(3),
+            })
+        return rows
+
+    def _on_item_changed(self, item) -> None:
+        if self._block:
+            return
+        if item is not None and item.column() == 2:
+            self._block = True
+            expr = self.table.item(item.row(), 1)
+            if expr is None:
+                self.table.setItem(item.row(), 1, QTableWidgetItem(item.text()))
+            else:
+                expr.setText(item.text())
+            self._block = False
+        self.parameters_changed.emit(self.parameters())
+
+    def _context_menu(self, pos) -> None:
+        menu = QMenu(self)
+        menu.addAction("Add Parameter", self.add_parameter)
+        act_del = menu.addAction("Delete Parameter", self.delete_parameter)
+        act_del.setEnabled(self.table.currentRow() >= 0)
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def add_parameter(self) -> None:
+        used = {r["name"] for r in self.parameters()}
+        base, i = "par", 1
+        name = base
+        while name in used:
+            i += 1
+            name = f"{base}{i}"
+        self._block = True
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        for j, text in enumerate([name, "0", "0", ""]):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
+            self.table.setItem(row, j, item)
+        self._block = False
+        self.parameters_changed.emit(self.parameters())
+
+    def delete_parameter(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        self._block = True
+        self.table.removeRow(row)
+        self._block = False
+        self.parameters_changed.emit(self.parameters())
 
 
 class ProgressPanel(QWidget):
