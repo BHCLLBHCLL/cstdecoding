@@ -29,10 +29,14 @@ from cst_parser import (
     CstParseError, open_cst, write_cst, new_project_files, read_entry,
 )
 from cst_project import (
-    UndoStack, append_change_material, append_group_item, append_solid_delete,
-    append_solid_rename, archive_get, parse_hidden_solids, resolve_parameters,
-    snapshot_state, write_hidden, write_parameters,
+    UndoStack, append_change_material, append_component_new, append_group_item,
+    append_history, append_solid_delete, append_solid_rename, archive_get,
+    box_mesh, brick_vba, cone_mesh, cone_vba, cylinder_mesh, cylinder_vba,
+    eval_expr, mesh_bounds, parse_hidden_solids, resolve_parameters,
+    snapshot_state, sphere_mesh, sphere_vba, torus_mesh, torus_vba,
+    unique_solid_name, write_hidden, write_parameters,
 )
+from cst_dialogs import shape_dialog
 from cst_icons import AppIcons
 from cst_panes import (
     CST3DCanvas, CST3DViewport, MessageWindow, NavigationTree, PaneFrame,
@@ -282,11 +286,11 @@ class CSTMainWindow(QMainWindow):
         layout.setSpacing(6)
         # 3D_Modeling_Shape Brick / Cylinder / Sphere / Torus / ECylinder
         layout.addWidget(self._make_ribbon_group("Shapes", [
-            ("Brick", "brick", self._nyi_slot("Brick")),
-            ("Cylinder", "cylinder", self._nyi_slot("Cylinder")),
-            ("Sphere", "sphere", self._nyi_slot("Sphere")),
-            ("Torus", "torus", self._nyi_slot("Torus")),
-            ("Cone", "cone", self._nyi_slot("Cone")),
+            ("Brick", "brick", lambda: self._on_shape("brick")),
+            ("Cylinder", "cylinder", lambda: self._on_shape("cylinder")),
+            ("Sphere", "sphere", lambda: self._on_shape("sphere")),
+            ("Torus", "torus", lambda: self._on_shape("torus")),
+            ("Cone", "cone", lambda: self._on_shape("cone")),
         ], big_first=True))
         # 3D_Modeling_Shape BooleanAdd / BooleanSubtract / BooleanInsert
         layout.addWidget(self._make_ribbon_group("Boolean", [
@@ -807,6 +811,117 @@ class CSTMainWindow(QMainWindow):
             if comp.get("name") == name:
                 return comp
         return None
+
+    def _eval_num(self, expr, default=0.0) -> float:
+        try:
+            return float(eval_expr(expr, (self._project_data or {}).get("parameters") or []))
+        except Exception:
+            try:
+                return float(expr)
+            except (TypeError, ValueError):
+                return float(default)
+
+    def _on_shape(self, kind: str) -> None:
+        data = shape_dialog(
+            self, kind, self._component_folders() or ["component1"],
+            self._material_names())
+        if not data:
+            return
+        try:
+            self._add_shape(kind, data)
+        except Exception as exc:
+            self.message_win.error(f"{kind}: {exc}")
+
+    def _material_names(self) -> list:
+        names = [m.get("name") for m in (self._project_data or {}).get("materials") or []
+                 if m.get("name")]
+        for extra in ("PEC", "Vacuum"):
+            if extra not in names:
+                names.append(extra)
+        return names
+
+    def _add_shape(self, kind: str, data: dict) -> None:
+        kind = (kind or data.get("kind") or "brick").lower()
+        component = (data.get("component") or "component1").replace("\\", "/")
+        raw_name = data.get("name") or kind
+        material = data.get("material") or "PEC"
+        existing = {c.get("name") for c in (self._project_data or {}).get("components") or []}
+        full = unique_solid_name(existing, component, raw_name)
+        solid = full.split(":", 1)[-1]
+
+        def num(key, default="0"):
+            return self._eval_num(data.get(key, default), float(default))
+
+        if kind == "brick":
+            xmin, xmax = num("xmin", "-5"), num("xmax", "5")
+            ymin, ymax = num("ymin", "-5"), num("ymax", "5")
+            zmin, zmax = num("zmin", "0"), num("zmax", "1")
+            mesh = box_mesh(xmin, xmax, ymin, ymax, zmin, zmax)
+            vba = brick_vba(solid, component, material,
+                            (data.get("xmin", xmin), data.get("xmax", xmax)),
+                            (data.get("ymin", ymin), data.get("ymax", ymax)),
+                            (data.get("zmin", zmin), data.get("zmax", zmax)))
+            caption = f"define brick: {full}"
+        elif kind == "cylinder":
+            radius = num("radius", "2")
+            zmin, zmax = num("zmin", "0"), num("zmax", "10")
+            cx, cy = num("cx", "0"), num("cy", "0")
+            mesh = cylinder_mesh(cx, cy, zmin, zmax, radius)
+            vba = cylinder_vba(solid, component, material,
+                               data.get("radius", radius),
+                               data.get("zmin", zmin), data.get("zmax", zmax),
+                               data.get("cx", cx), data.get("cy", cy))
+            caption = f"define cylinder: {full}"
+        elif kind == "sphere":
+            radius = num("radius", "5")
+            cx, cy, cz = num("cx", "0"), num("cy", "0"), num("cz", "0")
+            mesh = sphere_mesh(cx, cy, cz, radius)
+            vba = sphere_vba(solid, component, material,
+                             data.get("radius", radius),
+                             data.get("cx", cx), data.get("cy", cy),
+                             data.get("cz", cz))
+            caption = f"define sphere: {full}"
+        elif kind == "torus":
+            major, minor = num("major", "8"), num("minor", "1.5")
+            cx, cy, cz = num("cx", "0"), num("cy", "0"), num("cz", "0")
+            mesh = torus_mesh(cx, cy, cz, major, minor)
+            vba = torus_vba(solid, component, material,
+                            data.get("major", major), data.get("minor", minor),
+                            data.get("cx", cx), data.get("cy", cy),
+                            data.get("cz", cz))
+            caption = f"define torus: {full}"
+        else:
+            r_bot, r_top = num("r_bottom", "4"), num("r_top", "1")
+            zmin, zmax = num("zmin", "0"), num("zmax", "8")
+            cx, cy = num("cx", "0"), num("cy", "0")
+            mesh = cone_mesh(cx, cy, zmin, zmax, r_bot, r_top)
+            vba = cone_vba(solid, component, material,
+                           data.get("r_bottom", r_bot), data.get("r_top", r_top),
+                           data.get("zmin", zmin), data.get("zmax", zmax),
+                           data.get("cx", cx), data.get("cy", cy))
+            caption = f"define cone: {full}"
+
+        comp = {
+            "name": full,
+            "material": material,
+            "bounds": mesh_bounds(mesh),
+            "mesh": mesh,
+            "source": "primitive",
+        }
+        folders = self._component_folders()
+        need_component = component not in folders
+
+        def apply():
+            if need_component:
+                append_component_new(self._archive, component)
+            append_history(self._archive, caption, vba)
+            self._project_data.setdefault("components", []).append(comp)
+            self._selected_solid = full
+            self._refresh_geometry()
+
+        self._mutate(caption, apply)
+        self.message_win.info(f"Created {full}")
+        self.status.showMessage(f"Created {full}", 2500)
 
     def _component_folders(self) -> list:
         seen, folders = set(), []
@@ -1668,12 +1783,23 @@ class CSTMainWindow(QMainWindow):
             name_m = re.search(r'\.Name\s+"([^"]+)"', block)
             comp_m = re.search(r'\.Component\s+"([^"]+)"', block)
             mat_m = re.search(r'\.Material\s+"([^"]+)"', block)
-            r_m = re.search(r'\.Radius\s+"([^"]*)"', block)
+            r_m = (re.search(r'\.OuterRadius\s+"([^"]*)"', block)
+                   or re.search(r'\.Radius\s+"([^"]*)"', block))
+            zr = re.search(r'\.Zrange\s+"([^"]*)"\s*,\s*"([^"]*)"', block)
             h_m = re.search(r'\.Height\s+"([^"]*)"', block)
+            cx_m = re.search(r'\.Xcenter\s+"([^"]*)"', block)
+            cy_m = re.search(r'\.Ycenter\s+"([^"]*)"', block)
             try:
                 radius = float(r_m.group(1)) if r_m else 10.0
-                height = float(h_m.group(1)) if h_m else 20.0
-                bounds = (-radius, radius, -radius, radius, -height / 2, height / 2)
+                if zr:
+                    zmin, zmax = float(zr.group(1)), float(zr.group(2))
+                else:
+                    height = float(h_m.group(1)) if h_m else 20.0
+                    zmin, zmax = -height / 2, height / 2
+                cx = float(cx_m.group(1)) if cx_m else 0.0
+                cy = float(cy_m.group(1)) if cy_m else 0.0
+                bounds = (cx - radius, cx + radius, cy - radius, cy + radius,
+                          zmin, zmax)
             except (ValueError, TypeError):
                 bounds = (-10, 10, -10, 10, -10, 10)
             result["components"].append({
@@ -1687,16 +1813,72 @@ class CSTMainWindow(QMainWindow):
             name_m = re.search(r'\.Name\s+"([^"]+)"', block)
             comp_m = re.search(r'\.Component\s+"([^"]+)"', block)
             mat_m = re.search(r'\.Material\s+"([^"]+)"', block)
-            r_m = re.search(r'\.Radius\s+"([^"]*)"', block)
+            r_m = (re.search(r'\.CenterRadius\s+"([^"]*)"', block)
+                   or re.search(r'\.Radius\s+"([^"]*)"', block))
+            c_m = re.search(r'\.Center\s+"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"', block)
             try:
                 radius = float(r_m.group(1)) if r_m else 10.0
+                cx = float(c_m.group(1)) if c_m else 0.0
+                cy = float(c_m.group(2)) if c_m else 0.0
+                cz = float(c_m.group(3)) if c_m else 0.0
             except (ValueError, TypeError):
-                radius = 10.0
+                radius, cx, cy, cz = 10.0, 0.0, 0.0, 0.0
             result["components"].append({
                 "name": f"{comp_m.group(1) if comp_m else 'Default'}:"
                         f"{name_m.group(1) if name_m else 'Sphere'}",
                 "material": mat_m.group(1) if mat_m else "PEC",
-                "bounds": (-radius, radius, -radius, radius, -radius, radius),
+                "bounds": (cx - radius, cx + radius, cy - radius, cy + radius,
+                           cz - radius, cz + radius),
+            })
+
+        for block in re.findall(r"With Torus\s+(.*?)End With", text, re.S):
+            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+            comp_m = re.search(r'\.Component\s+"([^"]+)"', block)
+            mat_m = re.search(r'\.Material\s+"([^"]+)"', block)
+            maj = re.search(r'\.OuterRadius\s+"([^"]*)"', block)
+            mn = re.search(r'\.InnerRadius\s+"([^"]*)"', block)
+            cx_m = re.search(r'\.Xcenter\s+"([^"]*)"', block)
+            cy_m = re.search(r'\.Ycenter\s+"([^"]*)"', block)
+            cz_m = re.search(r'\.Zcenter\s+"([^"]*)"', block)
+            try:
+                major = float(maj.group(1)) if maj else 8.0
+                minor = float(mn.group(1)) if mn else 1.5
+                cx = float(cx_m.group(1)) if cx_m else 0.0
+                cy = float(cy_m.group(1)) if cy_m else 0.0
+                cz = float(cz_m.group(1)) if cz_m else 0.0
+            except (ValueError, TypeError):
+                major, minor, cx, cy, cz = 8.0, 1.5, 0.0, 0.0, 0.0
+            r = major + minor
+            result["components"].append({
+                "name": f"{comp_m.group(1) if comp_m else 'Default'}:"
+                        f"{name_m.group(1) if name_m else 'Torus'}",
+                "material": mat_m.group(1) if mat_m else "PEC",
+                "bounds": (cx - r, cx + r, cy - r, cy + r, cz - minor, cz + minor),
+            })
+
+        for block in re.findall(r"With Cone\s+(.*?)End With", text, re.S):
+            name_m = re.search(r'\.Name\s+"([^"]+)"', block)
+            comp_m = re.search(r'\.Component\s+"([^"]+)"', block)
+            mat_m = re.search(r'\.Material\s+"([^"]+)"', block)
+            rb = re.search(r'\.OuterRadius\s+"([^"]*)"', block)
+            rt = re.search(r'\.TopRadius\s+"([^"]*)"', block)
+            zr = re.search(r'\.Zrange\s+"([^"]*)"\s*,\s*"([^"]*)"', block)
+            cx_m = re.search(r'\.Xcenter\s+"([^"]*)"', block)
+            cy_m = re.search(r'\.Ycenter\s+"([^"]*)"', block)
+            try:
+                r_bot = float(rb.group(1)) if rb else 4.0
+                r_top = float(rt.group(1)) if rt else 0.0
+                zmin, zmax = (float(zr.group(1)), float(zr.group(2))) if zr else (0.0, 10.0)
+                cx = float(cx_m.group(1)) if cx_m else 0.0
+                cy = float(cy_m.group(1)) if cy_m else 0.0
+            except (ValueError, TypeError):
+                r_bot, r_top, zmin, zmax, cx, cy = 4.0, 0.0, 0.0, 10.0, 0.0, 0.0
+            r = max(r_bot, r_top)
+            result["components"].append({
+                "name": f"{comp_m.group(1) if comp_m else 'Default'}:"
+                        f"{name_m.group(1) if name_m else 'Cone'}",
+                "material": mat_m.group(1) if mat_m else "PEC",
+                "bounds": (cx - r, cx + r, cy - r, cy + r, zmin, zmax),
             })
 
         # Imported SAT/SAB solids are filled later from the .sab body AABBs.

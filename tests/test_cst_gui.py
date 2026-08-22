@@ -381,6 +381,69 @@ def test_undo_delete_restores_solid(viewer):
     assert "component1:box" in names
 
 
+def test_add_brick_history_and_reopen(viewer):
+    from pathlib import Path
+    from cst_parser import open_cst
+
+    viewer._on_new()
+    viewer._add_shape("brick", {
+        "name": "patch", "component": "component1", "material": "PEC",
+        "xmin": "-2", "xmax": "2", "ymin": "-3", "ymax": "3",
+        "zmin": "0", "zmax": "0.5",
+    })
+    names = {c["name"] for c in viewer._project_data["components"]}
+    assert "component1:patch" in names
+    patch = viewer._find_component("component1:patch")
+    assert patch["bounds"][0] == -2
+    assert patch["bounds"][5] == 0.5
+    assert patch["mesh"]["faces"]
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert "'@ define brick: component1:patch" in mod
+    assert '.Name "patch"' in mod
+    hist = viewer._archive["Model/3D/ModelHistory.json"].decode("utf-8")
+    assert "define brick: component1:patch" in hist
+
+    viewer._add_shape("cylinder", {
+        "name": "via", "component": "component1", "material": "PEC",
+        "radius": "1", "zmin": "0", "zmax": "4", "cx": "0", "cy": "0",
+    })
+    assert viewer._find_component("component1:via")
+    viewer._add_shape("sphere", {
+        "name": "ball", "component": "component1", "material": "Vacuum",
+        "radius": "3", "cx": "0", "cy": "0", "cz": "0",
+    })
+    viewer._add_shape("torus", {
+        "name": "ring", "component": "component1", "material": "PEC",
+        "major": "6", "minor": "1", "cx": "0", "cy": "0", "cz": "0",
+    })
+    viewer._add_shape("cone", {
+        "name": "tip", "component": "component1", "material": "PEC",
+        "r_bottom": "2", "r_top": "0.2", "zmin": "0", "zmax": "5",
+        "cx": "0", "cy": "0",
+    })
+    kinds = {c["name"].split(":")[-1] for c in viewer._project_data["components"]}
+    assert kinds >= {"patch", "via", "ball", "ring", "tip"}
+
+    scratch = Path(__file__).resolve().parent / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    out = scratch / "shapes.cst"
+    assert viewer._write_project(str(out)) is True
+    other = __import__("cst_gui").CSTMainWindow(enable_3d=False)
+    try:
+        other._load_cst(str(out))
+        names = {c["name"] for c in other._project_data["components"]}
+        assert "component1:patch" in names
+        assert "component1:via" in names
+        assert "component1:ball" in names
+        assert "component1:ring" in names
+        assert "component1:tip" in names
+        patch = other._find_component("component1:patch")
+        assert patch["bounds"][0] == -2
+        assert patch["bounds"][1] == 2
+    finally:
+        other.close()
+
+
 def test_rename_delete_hide_writeback(viewer):
     from cst_parser import new_project_files, open_cst
     from pathlib import Path
