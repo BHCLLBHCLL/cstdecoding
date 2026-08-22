@@ -16,9 +16,9 @@ from html import escape as _html_escape
 from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QIcon, QKeySequence, QLinearGradient, QPainter, QPen
 from PyQt5.QtWidgets import (
-    QAction, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMenu, QProxyStyle, QStyle, QTableWidget, QTableWidgetItem, QTextEdit,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAction, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMenu, QProxyStyle, QStyle, QTableWidget, QTableWidgetItem,
+    QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from cst_icons import AppIcons
@@ -253,6 +253,8 @@ class MessageWindow(QWidget):
 class PropertyInspector(QWidget):
     """Lower-left Properties pane (cabdecoding Control→Property analog)."""
 
+    property_changed = pyqtSignal(str, str, str, str)  # kind, name, field, value
+
     def __init__(self, parent=None):
         super().__init__(parent)
         v = QVBoxLayout(self)
@@ -265,18 +267,32 @@ class PropertyInspector(QWidget):
         self.form.setContentsMargins(0, 4, 0, 0)
         self.form.setSpacing(4)
         v.addWidget(self.form_host, 1)
-        self._fields: list[QLabel] = []
+        self._fields: list = []
+        self._kind = ""
+        self._name = ""
 
     def show_item(self, kind: str, name: str, payload: dict | None = None) -> None:
         self.title.setText(name or "(none)")
+        self._kind = kind or ""
+        self._name = name or ""
         while self.form.rowCount():
             self.form.removeRow(0)
         self._fields.clear()
         rows = [("Type", kind or "")]
+        editable = kind in ("solid", "component", "material")
+        payload = payload or {}
+        if editable:
+            self._add_edit_row("Name", name or payload.get("name", ""), "name")
+            if kind in ("solid", "component"):
+                self._add_edit_row(
+                    "Material", str(payload.get("material") or ""), "material")
         if payload:
+            skip = {"name", "material"} if editable else set()
             for key in ("material", "type", "field_type", "impedance",
                         "port_number", "epsilon", "mu", "colour",
                         "expr", "value", "description"):
+                if key in skip:
+                    continue
                 val = payload.get(key)
                 if val not in (None, ""):
                     rows.append((key.replace("_", " ").title(), str(val)))
@@ -294,6 +310,19 @@ class PropertyInspector(QWidget):
             lab.setWordWrap(True)
             self.form.addRow(label + ":", lab)
             self._fields.append(lab)
+
+    def _add_edit_row(self, label: str, value: str, field: str) -> None:
+        edit = QLineEdit(value)
+        edit.editingFinished.connect(
+            lambda e=edit, f=field: self._on_edit(f, e))
+        self.form.addRow(label + ":", edit)
+        self._fields.append(edit)
+
+    def _on_edit(self, field: str, edit: QLineEdit) -> None:
+        text = (edit.text() or "").strip()
+        if not text or not self._name:
+            return
+        self.property_changed.emit(self._kind, self._name, field, text)
 
     def clear(self) -> None:
         self.show_item("", "Select a Navigation Tree item", None)
@@ -419,12 +448,45 @@ class ProgressPanel(QWidget):
             self.table.setItem(i, 0, QTableWidgetItem(f"{label} — {status}"))
 
 
+class _NavTreeWidget(QTreeWidget):
+    """Internal-move is suppressed; drops onto Groups emit solid_dropped_on_group."""
+
+    solid_dropped_on_group = pyqtSignal(str, str)
+
+    def dragEnterEvent(self, event):
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        target = self.itemAt(event.pos())
+        srcs = self.selectedItems()
+        event.setDropAction(Qt.IgnoreAction)
+        event.accept()
+        if target is None or not srcs:
+            return
+        src = srcs[0]
+        if (src.data(0, KIND_ROLE) or "") != "solid":
+            return
+        group = target
+        while group is not None and (group.data(0, KIND_ROLE) or "") != "group":
+            group = group.parent()
+        if group is None:
+            return
+        gname = group.data(0, FULLNAME_ROLE) or group.text(0)
+        sname = src.data(0, FULLNAME_ROLE) or ""
+        if sname and gname and gname != "Mesh Groups":
+            self.solid_dropped_on_group.emit(sname, gname)
+
+
 class NavigationTree(QWidget):
     """CST Navigation Tree (Search + hierarchy from Model.mod / SAB names)."""
 
     item_selected = pyqtSignal(str, str, object)  # kind, name, payload
     visibility_changed = pyqtSignal(str, bool)    # component name, visible
     context_action = pyqtSignal(str, str, str)    # action, kind, name
+    solid_dropped_on_group = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -436,7 +498,7 @@ class NavigationTree(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._apply_filter)
         v.addWidget(self.search)
-        self.tree = QTreeWidget(self)
+        self.tree = _NavTreeWidget(self)
         self.tree.setObjectName("NavTree")
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(16)
@@ -447,6 +509,12 @@ class NavigationTree(QWidget):
         self.tree.setExpandsOnDoubleClick(True)
         self.tree.setSelectionMode(QTreeWidget.ExtendedSelection)
         self.tree.setEditTriggers(QTreeWidget.EditKeyPressed)
+        self.tree.setDragEnabled(True)
+        self.tree.setAcceptDrops(True)
+        self.tree.setDropIndicatorShown(True)
+        self.tree.setDragDropMode(QAbstractItemView.DragDrop)
+        self.tree.setDefaultDropAction(Qt.MoveAction)
+        self.tree.solid_dropped_on_group.connect(self.solid_dropped_on_group)
         self._tree_style = CstTreeStyle()
         self.tree.setStyle(self._tree_style)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -492,7 +560,37 @@ class NavigationTree(QWidget):
         kind = item.data(0, KIND_ROLE) or ""
         label = item.data(0, FULLNAME_ROLE) or item.text(0)
         payload = item.data(0, PAYLOAD_ROLE)
+        if kind == "solid":
+            self._highlight_solid(label)
         self.item_selected.emit(kind, label, payload)
+
+    def select_by_name(self, fullname: str, emit: bool = True) -> bool:
+        hit = None
+        for item in self._iter_items():
+            if ((item.data(0, KIND_ROLE) or "") == "solid"
+                    and (item.data(0, FULLNAME_ROLE) or "") == fullname):
+                hit = item
+                break
+        self._highlight_solid(fullname if hit is not None else "")
+        if hit is None:
+            return False
+        self._block = True
+        self.tree.setCurrentItem(hit)
+        self.tree.scrollToItem(hit)
+        self._block = False
+        if emit:
+            self.item_selected.emit(
+                "solid", fullname, hit.data(0, PAYLOAD_ROLE))
+        return True
+
+    def _highlight_solid(self, fullname: str) -> None:
+        hl = QColor("#fff3c4")
+        clear = QColor(0, 0, 0, 0)
+        for item in self._iter_items():
+            if (item.data(0, KIND_ROLE) or "") != "solid":
+                continue
+            match = (item.data(0, FULLNAME_ROLE) or "") == fullname
+            item.setBackground(0, hl if match and fullname else clear)
 
     def _on_item_changed(self, item, _col) -> None:
         if self._block:
@@ -805,9 +903,15 @@ class NavigationTree(QWidget):
         self._set_item(child, kind or icon_key, fullname or label, payload,
                        icon_key=icon_key)
         kind_name = kind or icon_key
+        flags = child.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled
         if kind_name in ("solid", "component", "material", "collection",
                          "folder", "group"):
-            child.setFlags(child.flags() | Qt.ItemIsEditable)
+            flags |= Qt.ItemIsEditable
+        if kind_name in ("solid", "component"):
+            flags |= Qt.ItemIsDragEnabled
+        if kind_name == "group":
+            flags |= Qt.ItemIsDropEnabled
+        child.setFlags(flags)
         return child
 
     def _add_solid_tree(self, parent, node_map, excluded, prefix=""):
@@ -960,6 +1064,8 @@ class NavigationTree(QWidget):
 class CST3DCanvas(QWidget):
     """Fallback isometric 3D viewport (QPainter) when VTK/OpenGL is unavailable."""
 
+    solid_picked = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project_data: dict = {}
@@ -972,6 +1078,8 @@ class CST3DCanvas(QWidget):
         self._drawing_mode = "Shading"
         self._dragging = False
         self._last_pos = None
+        self._press_pos = None
+        self._selected = ""
         self._color_list = [
             (0.95, 0.85, 0.3), (0.3, 0.75, 0.4), (0.8, 0.3, 0.3),
             (0.3, 0.5, 0.9), (0.7, 0.4, 0.7), (0.9, 0.6, 0.2),
@@ -1212,6 +1320,8 @@ class CST3DCanvas(QWidget):
             shade = 0.96 if fi in (0, 5) else (0.90 if fi in (1, 4) else 0.84)
             fr, fg, fb = [min(255, int(c * shade)) for c in (r0, g0, b0)]
             p.setPen(QPen(QColor(58, 58, 62), 1))
+            if name and name == self._selected:
+                p.setPen(QPen(QColor(230, 170, 20), 2))
             if wire:
                 p.setBrush(Qt.NoBrush)
             else:
@@ -1277,6 +1387,7 @@ class CST3DCanvas(QWidget):
         if event.button() in (Qt.LeftButton, Qt.MiddleButton):
             self._dragging = True
             self._last_pos = event.pos()
+            self._press_pos = event.pos()
 
     def mouseMoveEvent(self, event):
         if self._dragging and self._last_pos:
@@ -1286,14 +1397,47 @@ class CST3DCanvas(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        if (event.button() == Qt.LeftButton and self._press_pos is not None
+                and (event.pos() - self._press_pos).manhattanLength() < 6):
+            name = self._hit_test(event.pos())
+            self._selected = name
+            self.update()
+            if name:
+                self.solid_picked.emit(name)
         self._dragging = False
         self._last_pos = None
+        self._press_pos = None
+
+    def _hit_test(self, pos) -> str:
+        x, y = pos.x(), pos.y()
+        hit = ""
+        for comp in self._project_data.get("components") or []:
+            name = comp.get("name") or ""
+            if not name or name in self._hidden:
+                continue
+            bounds = comp.get("bounds")
+            if not bounds or len(bounds) != 6:
+                continue
+            xmin, xmax, ymin, ymax, zmin, zmax = bounds
+            corners = [
+                (xmin, ymin, zmin), (xmax, ymin, zmin),
+                (xmax, ymax, zmin), (xmin, ymax, zmin),
+                (xmin, ymin, zmax), (xmax, ymin, zmax),
+                (xmax, ymax, zmax), (xmin, ymax, zmax),
+            ]
+            pts = [self._world_to_screen(*c) for c in corners]
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            if min(xs) <= x <= max(xs) and min(ys) <= y <= max(ys):
+                hit = name
+        return hit
 
 
 class CST3DViewport(QWidget):
     """3D viewport: VTK trackball + orientation widget, QPainter fallback."""
 
     status_coords = pyqtSignal(str)
+    solid_picked = pyqtSignal(str)
 
     def __init__(self, parent=None, enable_3d: bool = True):
         super().__init__(parent)
@@ -1312,6 +1456,8 @@ class CST3DViewport(QWidget):
         self._iren_ready = False
         self._light_kit = None
         self._parallel = True
+        self._selected = ""
+        self._pick_xy = None
         if enable_3d and _HAS_VTK and not self._is_offscreen():
             try:
                 self._init_vtk()
@@ -1341,6 +1487,8 @@ class CST3DViewport(QWidget):
         if iren is not None:
             style = vtk.vtkInteractorStyleTrackballCamera()
             iren.SetInteractorStyle(style)
+            iren.AddObserver("LeftButtonPressEvent", self._vtk_left_press, 1.0)
+            iren.AddObserver("LeftButtonReleaseEvent", self._vtk_left_release, 1.0)
         axes = vtk.vtkAxesActor()
         axes.SetTotalLength(1.2, 1.2, 1.2)
         try:
@@ -1460,6 +1608,7 @@ class CST3DViewport(QWidget):
 
     def _init_canvas(self) -> None:
         self._canvas = CST3DCanvas(self)
+        self._canvas.solid_picked.connect(self.solid_picked)
         self._layout.addWidget(self._canvas)
         self._renderer = None
         self._using_vtk = False
@@ -1681,7 +1830,69 @@ class CST3DViewport(QWidget):
         if not self._using_vtk:
             return
         self._sync_actor_visibility()
+        self._apply_highlight()
         self._render()
+
+    def select_solid(self, name: str) -> None:
+        self._selected = name or ""
+        if self._canvas is not None:
+            self._canvas._selected = self._selected
+            self._canvas.update()
+        if self._using_vtk:
+            self._apply_highlight()
+            self._render()
+
+    def _vtk_left_press(self, _obj, _evt) -> None:
+        iren = self.ren_win.GetInteractor()
+        if iren is None:
+            return
+        self._pick_xy = iren.GetEventPosition()
+
+    def _vtk_left_release(self, _obj, _evt) -> None:
+        if vtk is None or not self._using_vtk or self._renderer is None:
+            return
+        iren = self.ren_win.GetInteractor()
+        if iren is None:
+            return
+        x, y = iren.GetEventPosition()
+        if self._pick_xy is not None:
+            dx = abs(x - self._pick_xy[0]) + abs(y - self._pick_xy[1])
+            if dx > 5:
+                return
+        picker = vtk.vtkPropPicker()
+        picker.Pick(float(x), float(y), 0, self._renderer)
+        actor = picker.GetActor()
+        name = ""
+        for n, a, k in self._actors:
+            if a is actor and k == "surf":
+                name = n
+                break
+        self.select_solid(name)
+        if name:
+            self.solid_picked.emit(name)
+            try:
+                b = actor.GetBounds()
+                cx = 0.5 * (b[0] + b[1])
+                cy = 0.5 * (b[2] + b[3])
+                cz = 0.5 * (b[4] + b[5])
+                self.status_coords.emit(f"({cx:.3g}, {cy:.3g}, {cz:.3g})")
+            except Exception:
+                pass
+
+    def _apply_highlight(self) -> None:
+        if not self._using_vtk:
+            return
+        for n, actor, kind in self._actors:
+            if kind != "surf":
+                continue
+            prop = actor.GetProperty()
+            if n == self._selected and self._selected:
+                prop.SetAmbient(0.95)
+                prop.SetEdgeVisibility(1)
+                prop.SetEdgeColor(1.0, 0.82, 0.12)
+                prop.SetLineWidth(2.2)
+            else:
+                prop.SetAmbient(0.78)
 
     def _sync_actor_visibility(self) -> None:
         mode = self._drawing_mode
@@ -1791,6 +2002,8 @@ class CST3DViewport(QWidget):
             elif bounds:
                 self.add_box(name, bounds, color, opacity)
         self.set_drawing_mode(self._drawing_mode)
+        if self._selected:
+            self._apply_highlight()
         if self._bounds:
             self._reset_camera()
             self._render()

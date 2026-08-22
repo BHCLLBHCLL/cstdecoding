@@ -29,7 +29,9 @@ from cst_parser import (
     CstParseError, open_cst, write_cst, new_project_files, read_entry,
 )
 from cst_project import (
-    UndoStack, resolve_parameters, snapshot_state, write_parameters,
+    UndoStack, append_change_material, append_group_item, append_solid_delete,
+    append_solid_rename, archive_get, parse_hidden_solids, resolve_parameters,
+    snapshot_state, write_hidden, write_parameters,
 )
 from cst_icons import AppIcons
 from cst_panes import (
@@ -73,6 +75,7 @@ class CSTMainWindow(QMainWindow):
         self._ribbon_minimized = False
         self._undo = UndoStack()
         self._restoring = False
+        self._selected_solid = ""
         self._build_ui()
         self._apply_style()
         if path:
@@ -431,9 +434,11 @@ class CSTMainWindow(QMainWindow):
         self.nav_tree.item_selected.connect(self._on_nav_selected)
         self.nav_tree.visibility_changed.connect(self._on_visibility)
         self.nav_tree.context_action.connect(self._on_nav_context)
+        self.nav_tree.solid_dropped_on_group.connect(self._on_drop_to_group)
         self.nav_pane = PaneFrame("Navigation Tree", self.nav_tree)
 
         self.properties = PropertyInspector()
+        self.properties.property_changed.connect(self._on_property_changed)
         self.prop_pane = PaneFrame("Properties", self.properties)
 
         left = QSplitter(Qt.Vertical)
@@ -445,6 +450,8 @@ class CSTMainWindow(QMainWindow):
         self._left_split = left
 
         self.viewport = CST3DViewport(enable_3d=self._enable_3d)
+        self.viewport.solid_picked.connect(self._on_solid_picked)
+        self.viewport.status_coords.connect(self._on_pick_coords)
         # CST 3D view has no pane caption; keep a thin frame only
         view_host = QFrame()
         view_host.setObjectName("ViewportFrame")
@@ -717,13 +724,40 @@ class CSTMainWindow(QMainWindow):
         self.message_win.info(f"Selected: {label} ({kind})")
         self.properties.show_item(kind, label, payload if isinstance(payload, dict) else None)
         self._status_label.setText(label)
+        if kind in ("solid", "component"):
+            self._selected_solid = label
+            self.viewport.select_solid(label)
+            comp = payload if isinstance(payload, dict) else self._find_component(label)
+            bounds = (comp or {}).get("bounds")
+            if bounds and len(bounds) == 6:
+                cx = 0.5 * (bounds[0] + bounds[1])
+                cy = 0.5 * (bounds[2] + bounds[3])
+                cz = 0.5 * (bounds[4] + bounds[5])
+                self._status_xy.setText(f"({cx:.3g}, {cy:.3g}, {cz:.3g})")
+        else:
+            self._selected_solid = ""
+            self.viewport.select_solid("")
+
+    def _on_solid_picked(self, name: str) -> None:
+        self._selected_solid = name
+        self.nav_tree.select_by_name(name, emit=False)
+        comp = self._find_component(name)
+        self.properties.show_item("solid", name, comp)
+        self._status_label.setText(name)
+        self.message_win.info(f"Picked: {name}")
+
+    def _on_pick_coords(self, text: str) -> None:
+        self._status_xy.setText(text)
 
     def _on_visibility(self, name: str, visible: bool) -> None:
         if visible:
             self._hidden_parts.discard(name)
         else:
             self._hidden_parts.add(name)
+        write_hidden(self._archive, self._hidden_parts)
         self.viewport.set_hidden(self._hidden_parts)
+        self.nav_tree.set_hidden_names(self._hidden_parts)
+        self._mark_dirty(True)
 
     def _on_nav_context(self, action: str, kind: str, name: str) -> None:
         handlers = {
@@ -764,6 +798,9 @@ class CSTMainWindow(QMainWindow):
         self.nav_tree.set_hidden_names(self._hidden_parts)
         self.viewport.render_project(data)
         self.viewport.set_hidden(self._hidden_parts)
+        if self._selected_solid:
+            self.nav_tree.select_by_name(self._selected_solid, emit=False)
+            self.viewport.select_solid(self._selected_solid)
 
     def _find_component(self, name: str):
         for comp in (self._project_data or {}).get("components") or []:
@@ -829,6 +866,10 @@ class CSTMainWindow(QMainWindow):
                 self._project_data["components"] = remain
                 for n in names:
                     self._hidden_parts.discard(n)
+                append_solid_delete(self._archive, names)
+                write_hidden(self._archive, self._hidden_parts)
+                if self._selected_solid in names:
+                    self._selected_solid = ""
                 self._refresh_geometry()
             self._mutate("delete " + names[0], apply)
         self.message_win.info(
@@ -874,6 +915,10 @@ class CSTMainWindow(QMainWindow):
                 for comp in comps:
                     if comp.get("material") == old:
                         comp["material"] = new
+            if kind == "solid":
+                append_solid_rename(self._archive, old, new)
+                if self._selected_solid == old:
+                    self._selected_solid = new
             self._refresh_geometry()
 
         self._mutate(f"rename {old}", apply)
@@ -936,6 +981,7 @@ class CSTMainWindow(QMainWindow):
             comp["material"] = chosen
             if mat and mat.get("colour"):
                 comp["colour"] = mat["colour"]
+            append_change_material(self._archive, name, chosen)
             self._refresh_geometry()
 
         self._mutate(f"assign {chosen}", apply)
@@ -1001,12 +1047,72 @@ class CSTMainWindow(QMainWindow):
         grp = next((g for g in groups if g.get("name") == chosen), None)
         if grp is None:
             return
-        items = list(grp.get("items") or [])
-        if name not in items:
-            items.append(name)
-            grp["items"] = items
-        self._refresh_geometry()
+        if name in (grp.get("items") or []):
+            return
+
+        def apply():
+            items = list(grp.get("items") or [])
+            if name not in items:
+                items.append(name)
+                grp["items"] = items
+            append_group_item(self._archive, name, chosen)
+            self._refresh_geometry()
+
+        self._mutate(f"group {chosen}", apply)
         self.message_win.info(f"{name} added to group {chosen}")
+
+    def _on_drop_to_group(self, solid: str, group: str) -> None:
+        if not solid or not group:
+            return
+        groups = (self._project_data or {}).setdefault("groups", [])
+        grp = next((g for g in groups if g.get("name") == group), None)
+        if grp is not None and solid in (grp.get("items") or []):
+            return
+
+        def apply():
+            groups_ = self._project_data.setdefault("groups", [])
+            g = next((x for x in groups_ if x.get("name") == group), None)
+            if g is None:
+                g = {"name": group, "type": "", "items": []}
+                groups_.append(g)
+            items = list(g.get("items") or [])
+            if solid not in items:
+                items.append(solid)
+                g["items"] = items
+            append_group_item(self._archive, solid, group)
+            self._refresh_geometry()
+
+        self._mutate(f"group {group}", apply)
+        self.message_win.info(f"{solid} added to group {group}")
+
+    def _on_property_changed(self, kind: str, name: str, field: str, value: str) -> None:
+        if not name or not value:
+            return
+        if field == "name" and kind in ("solid", "component"):
+            folders, _solid = split_solid_path(name)
+            new_full = value if ":" in value else "/".join(folders) + ":" + value
+            if new_full != name:
+                self._nav_rename("solid", f"{name}\n{new_full}")
+            return
+        if field == "name" and kind == "material":
+            if value != name:
+                self._nav_rename("material", f"{name}\n{value}")
+            return
+        if field == "material" and kind in ("solid", "component"):
+            comp = self._find_component(name)
+            if comp is None:
+                return
+            mats = (self._project_data or {}).get("materials") or []
+            mat = next((m for m in mats if m.get("name") == value), None)
+
+            def apply():
+                comp["material"] = value
+                if mat and mat.get("colour"):
+                    comp["colour"] = mat["colour"]
+                append_change_material(self._archive, name, value)
+                self._refresh_geometry()
+
+            self._mutate(f"material {value}", apply)
 
     # ------------------------------------------------------------------ file
 
@@ -1046,6 +1152,9 @@ class CSTMainWindow(QMainWindow):
         self.progress_panel.set_progress(data.get("progress") or [])
         self.viewport.render_project(data)
         self.viewport.set_hidden(self._hidden_parts)
+        if self._selected_solid:
+            self.nav_tree.select_by_name(self._selected_solid, emit=False)
+            self.viewport.select_solid(self._selected_solid)
 
     def _mutate(self, label: str, fn) -> None:
         if self._restoring:
@@ -1158,6 +1267,7 @@ class CSTMainWindow(QMainWindow):
             if self._project_data is not None:
                 write_parameters(
                     self._archive, self._project_data.get("parameters") or [])
+                write_hidden(self._archive, self._hidden_parts)
             files = list(self._archive.items())
             write_cst(path, files, comment=self._eocd_comment or None)
             self._current_path = path
@@ -1232,10 +1342,17 @@ class CSTMainWindow(QMainWindow):
     def _apply_loaded_project(self, path, entries, comment=b"") -> None:
         self._project_data = self._build_project_data(path, entries, comment)
         self._hidden_parts.clear()
+        self._selected_solid = ""
+        hid = archive_get(self._archive, "Model/3D/Model.hid")
+        if hid:
+            self._hidden_parts = parse_hidden_solids(
+                hid.decode("latin-1", "replace"))
         self.nav_tree.populate_from_project(self._project_data)
+        self.nav_tree.set_hidden_names(self._hidden_parts)
         self.param_list.set_parameters(self._project_data.get("parameters", []))
         self.progress_panel.set_progress(self._project_data.get("progress", []))
         self.viewport.render_project(self._project_data)
+        self.viewport.set_hidden(self._hidden_parts)
         self._apply_units_status()
         self._sync_title()
 

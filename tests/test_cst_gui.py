@@ -379,3 +379,75 @@ def test_undo_delete_restores_solid(viewer):
     viewer._on_undo()
     names = {c["name"] for c in viewer._project_data["components"]}
     assert "component1:box" in names
+
+
+def test_rename_delete_hide_writeback(viewer):
+    from cst_parser import new_project_files, open_cst
+    from pathlib import Path
+
+    viewer._on_new()
+    viewer._project_data["components"] = [
+        {"name": "component1:box", "material": "PEC",
+         "bounds": (-1, 1, -1, 1, 0, 1)},
+    ]
+    viewer._refresh_geometry()
+    viewer._nav_rename("solid", "component1:box\ncomponent1:brick")
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert 'Solid.Rename "component1:box", "component1:brick"' in mod
+    names = {c["name"] for c in viewer._project_data["components"]}
+    assert "component1:brick" in names
+
+    viewer._on_visibility("component1:brick", False)
+    assert "component1:brick" in viewer._hidden_parts
+    hid = viewer._archive["Model/3D/Model.hid"].decode("latin-1")
+    assert "component1:brick" in hid
+
+    viewer._nav_delete("solid", "component1:brick")
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert 'Solid.Delete "component1:brick"' in mod
+
+    scratch = Path(__file__).resolve().parent / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    out = scratch / "nav_edit.cst"
+    viewer._project_data["components"] = [
+        {"name": "component1:keep", "material": "PEC",
+         "bounds": (0, 1, 0, 1, 0, 1)},
+    ]
+    viewer._hidden_parts = {"component1:keep"}
+    assert viewer._write_project(str(out)) is True
+    _meta, entries = open_cst(out)
+    by = {e["name"].replace("\\", "/"): e["content"] for e in entries}
+    assert "component1:keep" in by["Model/3D/Model.hid"].decode("latin-1")
+
+
+def test_drop_to_group_and_pick_sync(viewer):
+    from cst_parser import new_project_files
+
+    viewer._archive = dict(new_project_files())
+    viewer._project_data = {
+        "components": [
+            {"name": "component1:box", "material": "PEC",
+             "bounds": (-1, 1, -1, 1, 0, 1)},
+        ],
+        "groups": [],
+        "materials": [],
+        "parameters": [],
+    }
+    viewer._refresh_geometry()
+    viewer._on_drop_to_group("component1:box", "Excluded from Simulation")
+    groups = {g["name"]: g for g in viewer._project_data["groups"]}
+    assert "component1:box" in groups["Excluded from Simulation"]["items"]
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert 'Group.AddItem "solid$component1:box"' in mod
+
+    assert viewer.nav_tree.select_by_name("component1:box")
+    viewer.viewport.select_solid("component1:box")
+    assert viewer.viewport._selected == "component1:box"
+    if viewer.viewport._canvas:
+        assert viewer.viewport._canvas._selected == "component1:box"
+
+    viewer._on_property_changed("solid", "component1:box", "material", "Vacuum")
+    box = viewer._find_component("component1:box")
+    assert box["material"] == "Vacuum"
+    assert 'Solid.ChangeMaterial "component1:box", "Vacuum"' in (
+        viewer._archive["Model/3D/Model.mod"].decode("latin-1"))
