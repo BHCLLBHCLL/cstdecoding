@@ -1,0 +1,31 @@
+# Bytecode / test junk
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Extracted CST internals and local samples (too large / proprietary)
+extracted/
+extracted_msa/
+extracted_sar/
+extracted_ship/
+temp_extract/
+mod_files/
+phone.cst
+*.cst
+!tests/fixtures/*.cst
+
+# Local probe / dump artifacts
+sab_report.json
+_probe_*.py
+_dump_*.py
+_diag_*.py
+tests/_scratch/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
