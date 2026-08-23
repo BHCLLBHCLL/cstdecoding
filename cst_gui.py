@@ -47,7 +47,7 @@ from cst_dialogs import (
     boolean_dialog, component_dialog, discrete_port_dialog,
     history_list_dialog, material_dialog,
     monitor_dialog, probe_dialog, shape_dialog, transform_dialog,
-    units_dialog, waveguide_port_dialog,
+    mesh_properties_dialog, units_dialog, waveguide_port_dialog,
 )
 from cst_icons import AppIcons
 from cst_panes import (
@@ -101,6 +101,7 @@ class CSTMainWindow(QMainWindow):
         self._result_rec: dict = {}
         self._quad_mode = False
         self._cad_edges = True
+        self._mesh_prev = "Shading"
         self._wcs_mode = "global"
         self._last_view_pixmap = None
         self._solver_ribbon_buttons: list = []
@@ -298,8 +299,10 @@ class CSTMainWindow(QMainWindow):
         layout.addWidget(self._make_ribbon_group("Mesh", [
             ("Update", "mesh", None, self._solver_btn()),
             ("Mesh View", "mesh", self._on_mesh_view),
-            ("Global\nProperties", "editprops", self._on_mesh_properties),
-            ("Local\nProperties", "list", self._on_mesh_properties),
+            ("Global\nProperties", "editprops",
+             lambda: self._on_mesh_properties(interactive=self._want_dialogs())),
+            ("Local\nProperties", "list",
+             lambda: self._on_mesh_properties(interactive=self._want_dialogs())),
         ]))
         layout.addWidget(self._make_ribbon_group("Edit", [
             ("Properties", "editprops", self._on_edit_properties),
@@ -959,15 +962,63 @@ class CSTMainWindow(QMainWindow):
                 self._apply_history(result)
                 self.message_win.info(f"History List saved ({len(result)} entries)")
 
-    def _on_mesh_view(self) -> None:
-        self.message_win.info(
-            "No mesh in this project. This product does not generate meshes.")
+    def _mesh_stats(self) -> dict:
+        from cst_mesh import mesh_stats, summarize_modelcache
+        data = self._project_data or {}
+        if not data.get("modelcache"):
+            data["modelcache"] = summarize_modelcache(self._archive)
+        return mesh_stats(data)
 
-    def _on_mesh_properties(self) -> None:
-        units = (self._project_data or {}).get("units") or {}
+    def _on_mesh_view(self) -> None:
+        if self._drawing_mode == "Mesh":
+            self._set_drawing_mode(self._mesh_prev or "Shading")
+            self.message_win.info("Mesh View off")
+            return
+        self._mesh_prev = self._drawing_mode if self._drawing_mode != "Mesh" else "Shading"
+        self._set_drawing_mode("Mesh")
+        st = self._mesh_stats()
+        cache = ""
+        if st["has_cache"]:
+            cache = (f"  ModelCache: {st['cache_segments']} segment(s), "
+                     f"{st['cache_bytes']:,} bytes.")
+        else:
+            cache = "  No ModelCache SAB."
         self.message_win.info(
-            "Mesh properties (read-only): no mesher. "
-            f"Length unit {units.get('length', 'mm')}.")
+            f"Mesh View: {st['solids']} solids, {st['triangles']} triangles "
+            f"(surface cache). Hex/tet cells: none. "
+            f"This product does not generate meshes.{cache}")
+        self._status_dim.setText(f"Mesh {st['triangles']} tri")
+
+    def _on_mesh_properties(self, values=None, interactive=False) -> None:
+        from cst_mesh import load_mesh_properties, save_mesh_properties
+        parsed = (self._project_data or {}).get("mesh_properties")
+        if not parsed:
+            parsed = load_mesh_properties(self._archive)
+            self._project_data["mesh_properties"] = parsed
+        props = dict(parsed.get("props") or {})
+        if values is None and interactive:
+            values = mesh_properties_dialog(self, props)
+            if values is None:
+                return
+        if values is None:
+            if not props:
+                self.message_win.info(
+                    "Mesh properties: none stored. No mesher in this product.")
+            else:
+                bits = [f"{k}={v}" for k, v in list(props.items())[:8]]
+                self.message_win.info(
+                    "Mesh properties (no mesher): " + ", ".join(bits))
+            return
+
+        def apply():
+            rec = save_mesh_properties(self._archive, values)
+            self._project_data["mesh_properties"] = rec
+
+        self._mutate("mesh properties", apply)
+        shown = (self._project_data.get("mesh_properties") or {}).get("props") or values
+        self.message_win.info(
+            "Mesh properties saved: "
+            + ", ".join(f"{k}={shown.get(k, values.get(k))}" for k in list(values)[:6]))
 
     def _on_open_report(self) -> None:
         self.msg_pane.setVisible(True)
@@ -1106,7 +1157,8 @@ class CSTMainWindow(QMainWindow):
             "slice_uv": lambda: self._nyi("Slice by UV Plane"),
             "separate": lambda: self._nyi("Separate Shape"),
             "align": lambda: self._nyi("Align"),
-            "local_mesh": lambda: self._nyi("Local Mesh Properties"),
+            "local_mesh": lambda: self._on_mesh_properties(
+                interactive=self._want_dialogs()),
             "elec_calc": lambda: self._nyi("Calculate Electrical Connections"),
             "elec_show": lambda: self._nyi("Show Electrical Connections"),
             "elec_hide": lambda: self._nyi("Hide Electrical Connections"),
@@ -2451,6 +2503,8 @@ class CSTMainWindow(QMainWindow):
 
     def _apply_loaded_project(self, path, entries, comment=b"") -> None:
         self._project_data = self._build_project_data(path, entries, comment)
+        from cst_mesh import summarize_modelcache
+        self._project_data["modelcache"] = summarize_modelcache(self._archive)
         self._hidden_parts.clear()
         self._selected_solid = ""
         hid = archive_get(self._archive, "Model/3D/Model.hid")
@@ -2508,6 +2562,8 @@ class CSTMainWindow(QMainWindow):
             "results_2d": [],
             "farfields": [],
             "tables": [],
+            "mesh_properties": {},
+            "modelcache": {},
         }
         parsed: dict = {}
         mod_entry = params_entry = history_entry = None
@@ -2527,7 +2583,7 @@ class CSTMainWindow(QMainWindow):
                 parsed = self._parse_model_mod(content.decode("latin1"))
                 for key in ("components", "materials", "ports", "monitors",
                             "groups", "faces", "curves", "wcs", "probes",
-                            "lumped", "units"):
+                            "lumped", "units", "mesh_properties"):
                     if key in parsed and parsed[key]:
                         data[key] = parsed[key]
                 data["_solid_materials"] = parsed.get("_solid_materials") or {}
@@ -2681,6 +2737,7 @@ class CSTMainWindow(QMainWindow):
             "groups": [], "faces": [], "curves": [], "wcs": [],
             "probes": [], "lumped": [], "units": {},
             "_solid_materials": {},
+            "mesh_properties": {},
         }
 
         geom = re.search(r'\.Geometry\s+"([^"]+)"', text) or re.search(
@@ -2696,6 +2753,8 @@ class CSTMainWindow(QMainWindow):
             "fmin": frange.group(1) if frange else None,
             "fmax": frange.group(2) if frange else None,
         }
+        from cst_mesh import parse_mesh_properties
+        result["mesh_properties"] = parse_mesh_properties(text)
 
         seen_materials = set()
         for m in re.finditer(r"With Material\s+(.*?)End With", text, re.S):

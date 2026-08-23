@@ -358,3 +358,21 @@ def probe_dialog(parent, defaults=None) -> dict | None:
          _combo(parent, ["X", "Y", "Z"], d.get("orientation", "X"))),
     ]
     return _form_dialog(parent, "Probe", fields)
+
+
+def mesh_properties_dialog(parent, props=None) -> dict | None:
+    """Edit existing mesh keywords. Does not generate a mesh."""
+    props = dict(props or {})
+    keys = list(props.keys()) or [
+        "MeshType", "StepsPerWaveNear", "StepsPerWaveFar", "RatioLimitGeometry",
+    ]
+    defaults = {
+        "MeshType": "Hex",
+        "StepsPerWaveNear": "10",
+        "StepsPerWaveFar": "4",
+        "RatioLimitGeometry": "15",
+    }
+    fields = []
+    for key in keys:
+        fields.append((key, key, QLineEdit(str(props.get(key, defaults.get(key, ""))))))
+    return _form_dialog(parent, "Mesh Properties", fields)

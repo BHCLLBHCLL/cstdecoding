@@ -1519,7 +1519,8 @@ class CST3DCanvas(QWidget):
         wires = mesh.get("wires") or []
         r0, g0, b0 = [int(ch * 255) for ch in color]
         wire = self._drawing_mode == "Wireframe"
-        if wire and wires:
+        mesh_view = self._drawing_mode == "Mesh"
+        if wire and wires and not mesh_view:
             if alpha_scale >= 0.12:
                 self._stroke_cad_wires(p, wires)
             return
@@ -1543,9 +1544,12 @@ class CST3DCanvas(QWidget):
             order.append((z, fi, a, b, c))
         order.sort()
         r0, g0, b0 = [int(ch * 255) for ch in color]
-        wire = self._drawing_mode == "Wireframe"
+        wire = self._drawing_mode in ("Wireframe", "Mesh")
         base_alpha = 255 if alpha_scale >= 0.99 else int(255 * max(0.08, min(1.0, alpha_scale)))
         alpha = 82 if self._drawing_mode == "Transparent" else (0 if wire else base_alpha)
+        if self._drawing_mode == "Mesh":
+            alpha = 48
+            wire = False
         for _z, _fi, a, b, c in order:
             pa, pb, pc = points[a], points[b], points[c]
             ux, uy, uz = pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]
@@ -1557,14 +1561,18 @@ class CST3DCanvas(QWidget):
             shade = 0.94 + 0.06 * abs(nz) / nlen
             fr, fg, fb = [min(255, int(ch * shade)) for ch in (r0, g0, b0)]
             pts = [QPoint(int(screen[i][0]), int(screen[i][1])) for i in (a, b, c)]
-            if wire:
+            if self._drawing_mode == "Mesh":
+                p.setPen(QPen(QColor(40, 40, 48), 1))
+                p.setBrush(QColor(fr, fg, fb, alpha))
+            elif wire:
                 p.setPen(QPen(QColor(fr, fg, fb), 1))
                 p.setBrush(Qt.NoBrush)
             else:
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(fr, fg, fb, alpha))
             p.drawPolygon(pts)
-        if not wire and wires and self._cad_edges and alpha_scale >= 0.12:
+        if (not wire and self._drawing_mode != "Mesh" and wires
+                and self._cad_edges and alpha_scale >= 0.12):
             self._stroke_cad_wires(p, wires)
         if name and screen:
             center_x = sum(pt[0] for pt in screen) / len(screen)
@@ -1603,7 +1611,7 @@ class CST3DCanvas(QWidget):
             ((sum(corners[i][2] for i in face) / 4, fi)
              for fi, face in enumerate(faces)))
         r0, g0, b0 = [int(c * 255) for c in color]
-        wire = self._drawing_mode == "Wireframe"
+        wire = self._drawing_mode in ("Wireframe", "Mesh")
         base_alpha = 255 if alpha_scale >= 0.99 else int(255 * max(0.08, min(1.0, alpha_scale)))
         alpha = 82 if self._drawing_mode == "Transparent" else (0 if wire else base_alpha)
         for _, fi in face_depths:
@@ -2416,7 +2424,7 @@ class CST3DViewport(QWidget):
             hide = name in self._hidden or name.split(":")[-1] in self._hidden
             prop = actor.GetProperty()
             if kind == "wire":
-                show_w = self._cad_edges and mode != "BoundingBox"
+                show_w = self._cad_edges and mode not in ("BoundingBox", "Mesh")
                 actor.SetVisibility(0 if hide or not show_w else 1)
                 prop.SetColor(0.22, 0.22, 0.24)
                 prop.SetLineWidth(1.15 if mode == "Wireframe" else 1.0)
@@ -2446,9 +2454,21 @@ class CST3DViewport(QWidget):
                     actor.ForceOpaqueOn()
                 except Exception:
                     pass
+            elif mode == "Mesh":
+                prop.SetRepresentationToSurface()
+                prop.SetOpacity(0.38)
+                prop.SetEdgeVisibility(1)
+                prop.SetEdgeColor(0.12, 0.12, 0.16)
+                prop.SetLineWidth(1.0)
+                prop.BackfaceCullingOff()
+                try:
+                    actor.ForceOpaqueOff()
+                except Exception:
+                    pass
             elif mode == "Transparent":
                 prop.SetRepresentationToSurface()
                 prop.SetOpacity(0.32)
+                prop.SetEdgeVisibility(0)
                 prop.BackfaceCullingOff()
                 try:
                     actor.ForceOpaqueOff()
@@ -2457,6 +2477,7 @@ class CST3DViewport(QWidget):
             else:
                 prop.SetRepresentationToSurface()
                 prop.SetOpacity(1.0)
+                prop.SetEdgeVisibility(0)
                 prop.BackfaceCullingOn()
                 try:
                     actor.ForceOpaqueOn()
@@ -2639,7 +2660,7 @@ class CST3DViewport(QWidget):
     @staticmethod
     def cad_edges_in_mode(mode: str) -> bool:
         """CST Shading/Transparent still draw B-rep silhouettes, not only Wireframe."""
-        return mode in ("Wireframe", "Shading", "Transparent", "BoundingBox")
+        return mode in ("Wireframe", "Shading", "Transparent", "BoundingBox", "Mesh")
 
     def is_vtk_available(self) -> bool:
         return self._using_vtk

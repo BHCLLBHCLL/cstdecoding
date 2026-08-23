@@ -955,3 +955,43 @@ def test_m10_export_import_sat(viewer):
         assert rec["mesh"]["faces"]
     finally:
         other.close()
+
+
+def test_m11_mesh_view_and_properties(viewer):
+    from cst_mesh import parse_mesh_properties
+    from cst_parser import new_project_files
+
+    viewer._on_new()
+    viewer._add_shape("brick", {
+        "name": "cell", "component": "component1", "material": "PEC",
+        "xmin": "0", "xmax": "2", "ymin": "0", "ymax": "2",
+        "zmin": "0", "zmax": "1",
+    })
+    prev = viewer._drawing_mode
+    viewer._on_mesh_view()
+    assert viewer._drawing_mode == "Mesh"
+    assert viewer.viewport._drawing_mode == "Mesh"
+    st = viewer._mesh_stats()
+    assert st["triangles"] == 12
+    assert st["hex_cells"] == 0
+    viewer._on_mesh_view()
+    assert viewer._drawing_mode == prev
+
+    viewer._on_mesh_properties(values={
+        "StepsPerWaveNear": "18",
+        "SetMeshType": "Hex",
+    })
+    rec = viewer._project_data["mesh_properties"]
+    assert rec["props"]["StepsPerWaveNear"] == "18"
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert parse_mesh_properties(mod)["props"]["StepsPerWaveNear"] == "18"
+    assert "not yet available" not in viewer.message_win.text.toPlainText()
+
+    viewer._archive = {n: b for n, b in new_project_files()}
+    viewer._archive["ModelCache/Model.sab"] = b"ACIS BinaryFilexxxx"
+    viewer._archive["ModelCache/Model.sab.index"] = (
+        __import__("cst_mesh").build_sab_index([0, 8]))
+    viewer._project_data["modelcache"] = {}
+    info = viewer._mesh_stats()
+    assert info["has_cache"] is True
+    assert info["cache_segments"] == 2
