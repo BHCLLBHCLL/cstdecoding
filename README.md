@@ -235,6 +235,8 @@ phone 项目（2022.0 创建 / 2024.0 保存）同时存在 .mod 与 ModelHistor
 
 ## 5. 11 个样本文件分析结果
 
+验收矩阵（打开 / 另存 / 树计数 / 截图清单）：`ACCEPTANCE.md`。差距表 M12 回写：`function_gap_analysis.md`。
+
 | 文件 | CST 版本 | 条目 | SAB | 几何来源 |
 |---|---|---|---|---|
 | CST Phone 5G.cst | 2024:0 | 58 | 1 | .mod + 导入 CSTphone2022.sab |

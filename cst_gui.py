@@ -2474,7 +2474,7 @@ class CSTMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ load
 
-    def _load_cst(self, path: str) -> None:
+    def _load_cst(self, path: str, *, load_sab: bool = True) -> None:
         self.message_win.info(f"Loading: {path}")
         self._status_progress.setVisible(True)
         self._status_progress.setValue(0)
@@ -2485,7 +2485,8 @@ class CSTMainWindow(QMainWindow):
             self._status_progress.setValue(40)
             self._archive = self._archive_from_entries(entries)
             self._eocd_comment = meta.get("comment_bytes") or b""
-            self._apply_loaded_project(path, entries, self._eocd_comment)
+            self._apply_loaded_project(path, entries, self._eocd_comment,
+                                       load_sab=load_sab)
             self._status_progress.setValue(100)
             self._current_path = path
             self._undo.clear()
@@ -2501,8 +2502,10 @@ class CSTMainWindow(QMainWindow):
         finally:
             self._status_progress.setVisible(False)
 
-    def _apply_loaded_project(self, path, entries, comment=b"") -> None:
-        self._project_data = self._build_project_data(path, entries, comment)
+    def _apply_loaded_project(self, path, entries, comment=b"",
+                             load_sab: bool = True) -> None:
+        self._project_data = self._build_project_data(
+            path, entries, comment, load_sab=load_sab)
         from cst_mesh import summarize_modelcache
         self._project_data["modelcache"] = summarize_modelcache(self._archive)
         self._hidden_parts.clear()
@@ -2542,7 +2545,8 @@ class CSTMainWindow(QMainWindow):
             content, _crc_ok, _ = read_entry(f, entry)
         return content
 
-    def _build_project_data(self, cst_path, entries, comment=b"") -> dict:
+    def _build_project_data(self, cst_path, entries, comment=b"",
+                           load_sab: bool = True) -> dict:
         data = {
             "name": os.path.basename(cst_path),
             "components": [],
@@ -2662,7 +2666,7 @@ class CSTMainWindow(QMainWindow):
                     "path": n, "format": "ascii",
                 })
 
-        sab_comps = self._load_sab_components(cst_path, entries)
+        sab_comps = self._load_sab_components(cst_path, entries) if load_sab else []
         if sab_comps:
             mat_override = parsed.get("_solid_materials") or {}
             for comp in sab_comps:
