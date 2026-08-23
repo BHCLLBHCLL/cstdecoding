@@ -19,9 +19,10 @@ from PyQt5.QtGui import (
     QPixmap,
 )
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QAction, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMenu, QProxyStyle, QStyle, QTableWidget, QTableWidgetItem,
-    QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAction, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QMenu, QProxyStyle, QStyle, QTableWidget,
+    QTableWidgetItem, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from cst_icons import AppIcons
@@ -1290,6 +1291,9 @@ class CST3DCanvas(QWidget):
         self._measure_mode = False
         self._measure_pts = []
         self._measure_dist = None
+        self._cad_edges = True
+        self._plane = None
+        self._quad_label = ""
         self._color_list = [
             (0.95, 0.85, 0.3), (0.3, 0.75, 0.4), (0.8, 0.3, 0.3),
             (0.3, 0.5, 0.9), (0.7, 0.4, 0.7), (0.9, 0.6, 0.2),
@@ -1310,6 +1314,14 @@ class CST3DCanvas(QWidget):
 
     def set_drawing_mode(self, mode: str) -> None:
         self._drawing_mode = mode
+        self.update()
+
+    def set_cad_edges(self, on: bool) -> None:
+        self._cad_edges = bool(on)
+        self.update()
+
+    def set_plane(self, plane) -> None:
+        self._plane = plane if plane in ("xy", "xz", "yz") else None
         self.update()
 
     def _compute_bounds(self) -> None:
@@ -1354,8 +1366,6 @@ class CST3DCanvas(QWidget):
         self._bounds = (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
 
     def _world_to_screen(self, x, y, z):
-        angle = math.radians(self._view_angle)
-        cos_a, sin_a = math.cos(angle), math.sin(angle)
         if self._bounds:
             xmin, xmax, ymin, ymax, zmin, zmax = self._bounds
             cx = (xmin + xmax) / 2
@@ -1364,8 +1374,18 @@ class CST3DCanvas(QWidget):
             sx, sy, sz = x - cx, y - cy, z - cz
         else:
             sx, sy, sz = x, y, z
-        px = (sx - sy) * cos_a
-        py = (sx + sy) * sin_a - sz
+        plane = self._plane
+        if plane == "xy":
+            px, py = sx, sy
+        elif plane == "xz":
+            px, py = sx, sz
+        elif plane == "yz":
+            px, py = sy, sz
+        else:
+            angle = math.radians(self._view_angle)
+            cos_a, sin_a = math.cos(angle), math.sin(angle)
+            px = (sx - sy) * cos_a
+            py = (sx + sy) * sin_a - sz
         return (self.width() / 2 + self._offset_x + px * self._zoom,
                 self.height() / 2 + self._offset_y - py * self._zoom)
 
@@ -1387,6 +1407,10 @@ class CST3DCanvas(QWidget):
         self._draw_ports(p)
         self._draw_overlays(p)
         self._draw_info(p)
+        if self._quad_label:
+            p.setPen(QColor(30, 40, 55))
+            p.setFont(QFont("Segoe UI", 9))
+            p.drawText(8, 16, self._quad_label)
         p.end()
 
     def _draw_grid(self, p):
@@ -1540,7 +1564,7 @@ class CST3DCanvas(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(fr, fg, fb, alpha))
             p.drawPolygon(pts)
-        if not wire and wires and alpha_scale >= 0.12:
+        if not wire and wires and self._cad_edges and alpha_scale >= 0.12:
             self._stroke_cad_wires(p, wires)
         if name and screen:
             center_x = sum(pt[0] for pt in screen) / len(screen)
@@ -1757,6 +1781,44 @@ class CST3DCanvas(QWidget):
         return None
 
 
+class QuadView(QWidget):
+    """2×2 orthographic + isometric panes (Top / Front / Side / 3D)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        grid = QGridLayout(self)
+        grid.setContentsMargins(1, 1, 1, 1)
+        grid.setSpacing(2)
+        self.panes: list[CST3DCanvas] = []
+        for i, (label, plane) in enumerate((
+                ("Top (XY)", "xy"), ("Front (YZ)", "yz"),
+                ("Side (XZ)", "xz"), ("3D", None),
+        )):
+            canvas = CST3DCanvas(self)
+            canvas._plane = plane
+            canvas._quad_label = label
+            canvas.setMinimumSize(80, 60)
+            self.panes.append(canvas)
+            grid.addWidget(canvas, i // 2, i % 2)
+
+    def render_project(self, project_data: dict) -> None:
+        for pane in self.panes:
+            pane.render_project(project_data)
+
+    def set_hidden(self, names) -> None:
+        hidden = set(names or [])
+        for pane in self.panes:
+            pane.set_hidden(hidden)
+
+    def set_drawing_mode(self, mode: str) -> None:
+        for pane in self.panes:
+            pane.set_drawing_mode(mode)
+
+    def set_cad_edges(self, on: bool) -> None:
+        for pane in self.panes:
+            pane.set_cad_edges(on)
+
+
 class CST3DViewport(QWidget):
     """3D viewport: VTK trackball + orientation widget, QPainter fallback."""
 
@@ -1787,6 +1849,7 @@ class CST3DViewport(QWidget):
         self._measure_pts = []
         self._measure_dist = None
         self._project_data = {}
+        self._cad_edges = True
         if enable_3d and _HAS_VTK and not self._is_offscreen():
             try:
                 self._init_vtk()
@@ -2353,7 +2416,8 @@ class CST3DViewport(QWidget):
             hide = name in self._hidden or name.split(":")[-1] in self._hidden
             prop = actor.GetProperty()
             if kind == "wire":
-                actor.SetVisibility(0 if hide or mode == "BoundingBox" else 1)
+                show_w = self._cad_edges and mode != "BoundingBox"
+                actor.SetVisibility(0 if hide or not show_w else 1)
                 prop.SetColor(0.22, 0.22, 0.24)
                 prop.SetLineWidth(1.15 if mode == "Wireframe" else 1.0)
                 continue
@@ -2402,6 +2466,7 @@ class CST3DViewport(QWidget):
     def set_plane(self, plane: str, negative: bool = False) -> None:
         if not self._using_vtk or not self._renderer:
             if self._canvas:
+                self._canvas.set_plane(plane)
                 self._canvas._view_angle = {"xy": 90, "xz": 0, "yz": 35}.get(plane, 30)
                 self._canvas.update()
             return
@@ -2434,6 +2499,21 @@ class CST3DViewport(QWidget):
             self._render_vtk(project_data)
         elif self._canvas:
             self._canvas.render_project(project_data)
+
+    def set_cad_edges(self, on: bool) -> None:
+        self._cad_edges = bool(on)
+        if self._canvas:
+            self._canvas.set_cad_edges(self._cad_edges)
+        if self._using_vtk:
+            self._sync_actor_visibility()
+            self._render()
+
+    def grab_view(self):
+        if self._using_vtk and self._vtk_widget is not None:
+            return self._vtk_widget.grab()
+        if self._canvas is not None:
+            return self._canvas.grab()
+        return self.grab()
 
     def set_clip_axis(self, axis) -> None:
         self._clip_axis = axis if axis in ("x", "y", "z") else None

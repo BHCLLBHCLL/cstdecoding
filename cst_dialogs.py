@@ -230,6 +230,25 @@ def monitor_dialog(parent, defaults=None) -> dict | None:
     return _form_dialog(parent, "Field Monitor", fields)
 
 
+def units_dialog(parent, units=None) -> dict | None:
+    units = units or {}
+    length = _combo(parent, ["mm", "cm", "m", "um", "inch"],
+                    units.get("length") or "mm")
+    freq = _combo(parent, ["GHz", "MHz", "kHz", "Hz"],
+                  units.get("frequency") or "GHz")
+    time_u = _combo(parent, ["ns", "ps", "us", "s"],
+                    units.get("time") or "ns")
+    fmin = QLineEdit(str(units.get("fmin") or "0"))
+    fmax = QLineEdit(str(units.get("fmax") or "10"))
+    return _form_dialog(parent, "Units", [
+        ("Length", "length", length),
+        ("Frequency", "frequency", freq),
+        ("Time", "time", time_u),
+        ("Fmin", "fmin", fmin),
+        ("Fmax", "fmax", fmax),
+    ])
+
+
 def probe_dialog(parent, defaults=None) -> dict | None:
     d = defaults or {}
     fields = [

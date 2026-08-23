@@ -784,3 +784,108 @@ def test_discrete_port_monitor_probe_roundtrip(viewer):
         assert probe["orientation"] == "Z"
     finally:
         other.close()
+
+
+def test_m9_solver_ribbon_disabled(viewer):
+    assert viewer._solver_ribbon_buttons
+    assert len(viewer._solver_ribbon_buttons) >= 12
+    for btn in viewer._solver_ribbon_buttons:
+        assert not btn.isEnabled(), btn.text()
+        assert "求解器" in btn.toolTip()
+
+
+def test_m9_copy_view(viewer, qapp):
+    viewer.resize(640, 480)
+    viewer.show()
+    qapp.processEvents()
+    viewer._on_copy_view()
+    assert viewer._last_view_pixmap is not None
+    assert not viewer._last_view_pixmap.isNull()
+    clip = QApplication.clipboard().pixmap()
+    assert clip is not None
+    assert not clip.isNull()
+
+
+def test_m9_quad_and_edges(viewer):
+    assert viewer._quad_mode is False
+    viewer._on_quad_view()
+    assert viewer._quad_mode is True
+    assert viewer._view_stack.currentWidget() is viewer.quad_view
+    viewer._set_drawing_mode("Wireframe")
+    assert all(p._drawing_mode == "Wireframe" for p in viewer.quad_view.panes)
+    viewer._on_quad_view()
+    assert viewer._quad_mode is False
+    assert viewer._view_stack.currentWidget() is viewer.viewport
+
+    assert viewer._cad_edges is True
+    viewer._on_toggle_edges()
+    assert viewer._cad_edges is False
+    assert viewer.viewport._cad_edges is False
+    assert all(p._cad_edges is False for p in viewer.quad_view.panes)
+    viewer._on_toggle_edges()
+    assert viewer._cad_edges is True
+
+
+def test_m9_units_and_view_handlers(viewer):
+    viewer._on_units({
+        "length": "um", "frequency": "MHz", "time": "ns",
+        "fmin": "1", "fmax": "10",
+    })
+    assert viewer._project_data["units"]["length"] == "um"
+    assert "um" in viewer._status_units.text()
+    assert "MHz" in viewer._status_units.text()
+
+    viewer.message_win.clear()
+    viewer._on_history_list()
+    viewer._on_background()
+    viewer._on_boundaries()
+    viewer._on_wcs("local")
+    assert viewer._wcs_mode == "local"
+    viewer._on_material_library()
+    viewer._on_source("plane_wave")
+    viewer._on_smith()
+    viewer._on_field_sample("face")
+    viewer._on_macro("vba")
+    viewer._on_help_topic("started")
+    viewer._on_mesh_view()
+    viewer._on_mesh_properties()
+    viewer._on_open_report()
+    viewer._on_copy()
+    viewer._on_paste()
+    viewer._on_delete()
+    log = viewer.message_win.text.toPlainText()
+    assert "not yet available" not in log
+    assert "不含求解器" in cst_gui.SOLVER_TIP or "求解器" in cst_gui.SOLVER_TIP
+
+
+def test_m9_ribbon_no_nyi(viewer):
+    from PyQt5.QtWidgets import QToolButton
+
+    viewer.message_win.clear()
+    safe = {
+        "Paste", "Cut", "Copy", "Copy View", "Background", "Boundaries",
+        "Mesh View", "Global\nProperties", "Local\nProperties", "Properties",
+        "History List", "Delete", "Parameter\nList", "Open\nReport",
+        "Local WCS", "Align Global", "Library",
+        "Field\nSource", "Plane\nWave", "Farfield\nSource",
+        "S-Parameters", "1D Plot", "2D/3D", "Farfield", "Smith",
+        "On Face", "On Curve",
+        "Fit", "Front", "Top", "Side", "Perspective",
+        "Wireframe", "Shading", "Transparent", "Bounding Box",
+        "Slice", "Measure", "CAD Edges", "Quad View",
+        "Navigation", "Properties", "Messages", "Parameters",
+        "VBA", "Python", "Getting\nStarted", "Videos", "Tutorials",
+    }
+    clicked = 0
+    for btn in viewer.findChildren(QToolButton):
+        if btn.objectName() != "RibbonButton":
+            continue
+        if not btn.isEnabled():
+            continue
+        if btn.text() not in safe:
+            continue
+        btn.click()
+        clicked += 1
+    assert clicked >= 20
+    log = viewer.message_win.text.toPlainText()
+    assert "not yet available" not in log

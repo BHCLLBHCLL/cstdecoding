@@ -45,13 +45,13 @@ from cst_project import (
 from cst_dialogs import (
     boolean_dialog, component_dialog, discrete_port_dialog, material_dialog,
     monitor_dialog, probe_dialog, shape_dialog, transform_dialog,
-    waveguide_port_dialog,
+    units_dialog, waveguide_port_dialog,
 )
 from cst_icons import AppIcons
 from cst_panes import (
-    CST3DCanvas, CST3DViewport, MessageWindow, NavigationTree, PaneFrame,
-    ParameterList, ProgressPanel, PropertyInspector, ResultPlot,
-    split_solid_path,
+    CST3DCanvas, CST3DViewport, FULLNAME_ROLE, KIND_ROLE, MessageWindow,
+    NavigationTree, PAYLOAD_ROLE, PaneFrame, ParameterList, ProgressPanel,
+    PropertyInspector, QuadView, ResultPlot, split_solid_path,
 )
 from cst_results import (
     parse_result_bytes, result_has_curve, result_has_grid,
@@ -62,7 +62,7 @@ from sab_bodies import extract_bodies, opacity_for
 __all__ = [
     "CSTMainWindow", "AppIcons", "PaneFrame", "MessageWindow",
     "NavigationTree", "ParameterList", "ProgressPanel", "CST3DViewport",
-    "CST3DCanvas", "PropertyInspector", "ResultPlot",
+    "CST3DCanvas", "PropertyInspector", "QuadView", "ResultPlot",
 ]
 
 
@@ -71,6 +71,8 @@ __all__ = [
 RIBBON_TABS = (
     "Home", "Modeling", "Simulation", "Post-Processing", "View", "Macros", "Help",
 )
+
+SOLVER_TIP = "本产品不含求解器"
 
 
 class CSTMainWindow(QMainWindow):
@@ -95,6 +97,11 @@ class CSTMainWindow(QMainWindow):
         self._restoring = False
         self._selected_solid = ""
         self._result_rec: dict = {}
+        self._quad_mode = False
+        self._cad_edges = True
+        self._wcs_mode = "global"
+        self._last_view_pixmap = None
+        self._solver_ribbon_buttons: list = []
         self._build_ui()
         self._apply_style()
         if path:
@@ -210,7 +217,8 @@ class CSTMainWindow(QMainWindow):
         self._ribbon_host = host
         self._ribbon_content_height = 104
 
-    def _make_ribbon_button(self, text, icon_name, slot=None, big=False):
+    def _make_ribbon_button(self, text, icon_name, slot=None, big=False,
+                            enabled=True, tooltip=""):
         b = QToolButton()
         b.setObjectName("RibbonButton")
         size = 32
@@ -221,7 +229,13 @@ class CSTMainWindow(QMainWindow):
         b.setAutoRaise(True)
         b.setFixedHeight(82)
         b.setMinimumWidth(64 if big else 60)
-        if slot:
+        if tooltip:
+            b.setToolTip(tooltip)
+        if not enabled:
+            b.setEnabled(False)
+            b.setToolTip(tooltip or SOLVER_TIP)
+            self._solver_ribbon_buttons.append(b)
+        elif slot:
             b.clicked.connect(lambda _checked=False, s=slot: s())
         return b
 
@@ -232,12 +246,23 @@ class CSTMainWindow(QMainWindow):
         bl.setContentsMargins(4, 2, 4, 14)
         row = QHBoxLayout()
         row.setSpacing(2)
-        for i, (text, icon, slot) in enumerate(buttons):
+        for i, item in enumerate(buttons):
+            extra = {}
+            if len(item) == 4:
+                text, icon, slot, extra = item
+            else:
+                text, icon, slot = item
+            extra = extra or {}
             row.addWidget(self._make_ribbon_button(
-                text, icon, slot, big=big_first and i == 0))
+                text, icon, slot, big=big_first and i == 0,
+                enabled=extra.get("enabled", True),
+                tooltip=extra.get("tooltip", "")))
         row.addStretch(1)
         bl.addLayout(row)
         return box
+
+    def _solver_btn(self):
+        return {"enabled": False, "tooltip": SOLVER_TIP}
 
     def _nyi_slot(self, name: str):
         return lambda _=False, n=name: self._nyi(n)
@@ -249,47 +274,41 @@ class CSTMainWindow(QMainWindow):
         layout.setSpacing(6)
         # DE_Misc Paste / Cut / Copy / CopyView
         layout.addWidget(self._make_ribbon_group("Clipboard", [
-            ("Paste", "paste", self._nyi_slot("Paste")),
-            ("Cut", "cut", self._nyi_slot("Cut")),
-            ("Copy", "copy", self._nyi_slot("Copy")),
-            ("Copy View", "screenshot", self._nyi_slot("Copy View")),
+            ("Paste", "paste", self._on_paste),
+            ("Cut", "cut", self._on_cut),
+            ("Copy", "copy", self._on_copy),
+            ("Copy View", "screenshot", self._on_copy_view),
         ], big_first=True))
-        # 3D_Simulation_General Units / Frequency / Boundaries
-        # 3D_Modeling_General Background
         layout.addWidget(self._make_ribbon_group("Settings", [
-            ("Units", "units", self._nyi_slot("Units")),
-            ("Background", "background", self._nyi_slot("Background Properties")),
-            ("Frequency", "frequency", self._nyi_slot("Frequency")),
-            ("Boundaries", "boundary", self._nyi_slot("Boundaries")),
+            ("Units", "units", lambda: self._on_units()),
+            ("Background", "background", self._on_background),
+            ("Frequency", "frequency", lambda: self._on_units()),
+            ("Boundaries", "boundary", self._on_boundaries),
         ]))
-        # 3D_Simulation_Solver * / Solve SimulationRun
         layout.addWidget(self._make_ribbon_group("Simulation", [
-            ("Setup\nSolver", "setup", self._nyi_slot("Setup Solver")),
-            ("Start", "start", self._nyi_slot("Start Simulation")),
-            ("Pause", "pause", self._nyi_slot("Pause")),
-            ("Abort", "stop", self._nyi_slot("Abort")),
+            ("Setup\nSolver", "setup", None, self._solver_btn()),
+            ("Start", "start", None, self._solver_btn()),
+            ("Pause", "pause", None, self._solver_btn()),
+            ("Abort", "stop", None, self._solver_btn()),
         ], big_first=True))
-        # 3D_Simulation_Mesh Properties / PropertiesLocal / ShowControls
         layout.addWidget(self._make_ribbon_group("Mesh", [
-            ("Update", "mesh", self._nyi_slot("Update Mesh")),
-            ("Mesh View", "mesh", self._nyi_slot("Mesh View")),
-            ("Global\nProperties", "editprops", self._nyi_slot("Mesh Properties")),
-            ("Local\nProperties", "list", self._nyi_slot("Local Mesh Properties")),
+            ("Update", "mesh", None, self._solver_btn()),
+            ("Mesh View", "mesh", self._on_mesh_view),
+            ("Global\nProperties", "editprops", self._on_mesh_properties),
+            ("Local\nProperties", "list", self._on_mesh_properties),
         ]))
-        # DE_Misc EditProperties / 3D_Modeling_General HistoryList
         layout.addWidget(self._make_ribbon_group("Edit", [
             ("Properties", "editprops", self._on_edit_properties),
-            ("History List", "history", self._nyi_slot("History List")),
-            ("Delete", "delete", self._nyi_slot("Delete")),
+            ("History List", "history", lambda: self._on_history_list()),
+            ("Delete", "delete", self._on_delete),
         ]))
-        # 3D_Modeling_General Parameter / 3D_Simulation_General ParameterSweep
         layout.addWidget(self._make_ribbon_group("Parameters", [
             ("Parameter\nList", "list", self._show_parameter_list),
-            ("Parametric\nSweep", "parametric", self._nyi_slot("Parametric Sweep")),
-            ("Optimizer", "optimizer", self._nyi_slot("Optimizer")),
+            ("Parametric\nSweep", "parametric", None, self._solver_btn()),
+            ("Optimizer", "optimizer", None, self._solver_btn()),
         ]))
         layout.addWidget(self._make_ribbon_group("Report", [
-            ("Open\nReport", "report", self._nyi_slot("Open Report")),
+            ("Open\nReport", "report", self._on_open_report),
         ]))
         layout.addStretch(1)
         return w
@@ -322,13 +341,12 @@ class CSTMainWindow(QMainWindow):
         ]))
         # 3D_Modeling_WCS Align / AlignGlobal
         layout.addWidget(self._make_ribbon_group("WCS", [
-            ("Local WCS", "wcs", self._nyi_slot("WCS")),
-            ("Align Global", "wcs", self._nyi_slot("WCS Align Global")),
+            ("Local WCS", "wcs", lambda: self._on_wcs("local")),
+            ("Align Global", "wcs", lambda: self._on_wcs("global")),
         ]))
-        # 3D_Modeling_General Material / NewMaterial / MaterialLibrary
         layout.addWidget(self._make_ribbon_group("Materials", [
             ("New", "material", lambda: self._on_new_material()),
-            ("Library", "material", self._nyi_slot("Material Library")),
+            ("Library", "material", self._on_material_library),
         ]))
         # Discrete / Waveguide ports live under simulation but are modeled here
         layout.addWidget(self._make_ribbon_group("Ports", [
@@ -344,24 +362,24 @@ class CSTMainWindow(QMainWindow):
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(6)
         layout.addWidget(self._make_ribbon_group("Solver", [
-            ("Frequency\nDomain", "setup", self._nyi_slot("Frequency Domain Solver")),
-            ("Time\nDomain", "setup", self._nyi_slot("Time Domain Solver")),
-            ("Eigenmode", "setup", self._nyi_slot("Eigenmode Solver")),
-            ("Integral\nEquation", "setup", self._nyi_slot("Integral Equation Solver")),
+            ("Frequency\nDomain", "setup", None, self._solver_btn()),
+            ("Time\nDomain", "setup", None, self._solver_btn()),
+            ("Eigenmode", "setup", None, self._solver_btn()),
+            ("Integral\nEquation", "setup", None, self._solver_btn()),
         ]))
         layout.addWidget(self._make_ribbon_group("Sources", [
-            ("Field\nSource", "sources", self._nyi_slot("Field Source")),
-            ("Plane\nWave", "sources", self._nyi_slot("Plane Wave")),
-            ("Farfield\nSource", "farfield", self._nyi_slot("Farfield Source")),
+            ("Field\nSource", "sources", lambda: self._on_source("field")),
+            ("Plane\nWave", "sources", lambda: self._on_source("plane_wave")),
+            ("Farfield\nSource", "farfield", lambda: self._on_source("farfield")),
         ]))
         layout.addWidget(self._make_ribbon_group("Monitors", [
             ("Field", "monitor", lambda: self._on_field_monitor()),
             ("Probe", "probe", lambda: self._on_probe()),
-            ("S-Parameters", "1d", self._nyi_slot("S-Parameters")),
+            ("S-Parameters", "1d", lambda: self._show_result_kind("result_1d")),
         ]))
         layout.addWidget(self._make_ribbon_group("Run", [
-            ("Start", "start", self._nyi_slot("Start Simulation")),
-            ("Sweep", "parametric", self._nyi_slot("Parametric Sweep")),
+            ("Start", "start", None, self._solver_btn()),
+            ("Sweep", "parametric", None, self._solver_btn()),
         ], big_first=True))
         layout.addStretch(1)
         return w
@@ -376,15 +394,15 @@ class CSTMainWindow(QMainWindow):
             ("1D Plot", "1d", lambda: self._show_result_kind("result_1d")),
             ("2D/3D", "2d", lambda: self._show_result_kind("result_2d")),
             ("Farfield", "farfield", lambda: self._show_result_kind("farfield")),
-            ("Smith", "1d", self._nyi_slot("Smith Chart")),
+            ("Smith", "1d", self._on_smith),
         ]))
         layout.addWidget(self._make_ribbon_group("Field", [
-            ("On Face", "faces", self._nyi_slot("Field On Face")),
-            ("On Curve", "curves", self._nyi_slot("Field On Curve")),
+            ("On Face", "faces", lambda: self._on_field_sample("face")),
+            ("On Curve", "curves", lambda: self._on_field_sample("curve")),
         ]))
         layout.addWidget(self._make_ribbon_group("Image", [
             ("Export", "export", lambda: self._on_export_plot()),
-            ("Copy View", "screenshot", self._nyi_slot("Copy View")),
+            ("Copy View", "screenshot", self._on_copy_view),
         ]))
         layout.addStretch(1)
         return w
@@ -411,6 +429,8 @@ class CSTMainWindow(QMainWindow):
         layout.addWidget(self._make_ribbon_group("Tools", [
             ("Slice", "slice", lambda: self._on_slice()),
             ("Measure", "dimensions", lambda: self._on_measure()),
+            ("CAD Edges", "wireframe", self._on_toggle_edges),
+            ("Quad View", "perspective", self._on_quad_view),
         ]))
         layout.addWidget(self._make_ribbon_group("Windows", [
             ("Navigation", "list", lambda: self._toggle_pane("nav")),
@@ -426,8 +446,8 @@ class CSTMainWindow(QMainWindow):
         layout = QHBoxLayout(w)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.addWidget(self._make_ribbon_group("Macros", [
-            ("VBA", "macros", self._nyi_slot("VBA Macro")),
-            ("Python", "python", self._nyi_slot("Python Macro")),
+            ("VBA", "macros", lambda: self._on_macro("vba")),
+            ("Python", "python", lambda: self._on_macro("python")),
         ], big_first=True))
         layout.addStretch(1)
         return w
@@ -439,9 +459,9 @@ class CSTMainWindow(QMainWindow):
         # DE_Misc Help / DE_Document GettingStarted / Videos / Tutorials
         layout.addWidget(self._make_ribbon_group("Help", [
             ("Help", "help", self._on_about),
-            ("Getting\nStarted", "help", self._nyi_slot("Getting Started")),
-            ("Videos", "help", self._nyi_slot("Getting Started Videos")),
-            ("Tutorials", "help", self._nyi_slot("Tutorials")),
+            ("Getting\nStarted", "help", lambda: self._on_help_topic("started")),
+            ("Videos", "help", lambda: self._on_help_topic("videos")),
+            ("Tutorials", "help", lambda: self._on_help_topic("tutorials")),
         ]))
         layout.addStretch(1)
         return w
@@ -476,6 +496,7 @@ class CSTMainWindow(QMainWindow):
         self.viewport.solid_picked.connect(self._on_solid_picked)
         self.viewport.status_coords.connect(self._on_pick_coords)
         self.result_plot = ResultPlot()
+        self.quad_view = QuadView()
         self._view_stack = QStackedWidget()
         # CST 3D view has no pane caption; keep a thin frame only
         view_host = QFrame()
@@ -484,6 +505,7 @@ class CSTMainWindow(QMainWindow):
         vh.setContentsMargins(0, 0, 0, 0)
         self._view_stack.addWidget(self.viewport)
         self._view_stack.addWidget(self.result_plot)
+        self._view_stack.addWidget(self.quad_view)
         vh.addWidget(self._view_stack)
 
         self.message_win = MessageWindow()
@@ -732,6 +754,8 @@ class CSTMainWindow(QMainWindow):
         if mode != "BoundingBox" and getattr(self.viewport, "_measure_mode", False):
             pass
         self.viewport.set_drawing_mode(mode)
+        if getattr(self, "quad_view", None) is not None:
+            self.quad_view.set_drawing_mode(mode)
         self.message_win.info(f"Drawing: {mode}")
         self._status_mode.setText(f"Drawing: {mode}")
         if mode != "BoundingBox":
@@ -760,6 +784,185 @@ class CSTMainWindow(QMainWindow):
         else:
             self.message_win.info("Measure off")
             self._status_mode.setText(f"Drawing: {self._drawing_mode}")
+
+    def _current_nav(self):
+        item = self.nav_tree.tree.currentItem()
+        if item is None:
+            return "", "", None
+        kind = item.data(0, KIND_ROLE) or ""
+        name = item.data(0, FULLNAME_ROLE) or item.text(0)
+        return kind, name, item
+
+    def _on_copy(self) -> None:
+        kind, name, _item = self._current_nav()
+        self._nav_copy(kind, name)
+
+    def _on_cut(self) -> None:
+        kind, name, _item = self._current_nav()
+        if not name:
+            self.message_win.info("Cut: nothing selected.")
+            return
+        self._nav_copy(kind, name)
+        self._nav_delete(kind, name)
+
+    def _on_paste(self) -> None:
+        kind, name, _item = self._current_nav()
+        self._nav_paste(kind, name)
+
+    def _on_delete(self) -> None:
+        kind, name, _item = self._current_nav()
+        if not name:
+            self.message_win.info("Delete: nothing selected.")
+            return
+        self._nav_delete(kind, name)
+
+    def _on_copy_view(self) -> None:
+        stack = getattr(self, "_view_stack", None)
+        if stack is not None and stack.currentWidget() is self.result_plot:
+            pm = self.result_plot.to_pixmap()
+        elif self._quad_mode and getattr(self, "quad_view", None) is not None:
+            pm = self.quad_view.grab()
+        else:
+            pm = self.viewport.grab_view()
+        self._last_view_pixmap = pm
+        QApplication.clipboard().setPixmap(pm)
+        self.message_win.info("Copied view to clipboard.")
+        self.status.showMessage("Copy View", 1500)
+
+    def _on_toggle_edges(self) -> None:
+        self._cad_edges = not self._cad_edges
+        self.viewport.set_cad_edges(self._cad_edges)
+        if getattr(self, "quad_view", None) is not None:
+            self.quad_view.set_cad_edges(self._cad_edges)
+        state = "on" if self._cad_edges else "off"
+        self.message_win.info(f"CAD edges {state}")
+        self._status_dim.setText(f"Edges {state}")
+
+    def _on_quad_view(self) -> None:
+        self._quad_mode = not self._quad_mode
+        data = self._project_data or {}
+        if self._quad_mode:
+            self.quad_view.render_project(data)
+            self.quad_view.set_hidden(self._hidden_parts)
+            self.quad_view.set_drawing_mode(self._drawing_mode)
+            self.quad_view.set_cad_edges(self._cad_edges)
+            self._view_stack.setCurrentWidget(self.quad_view)
+            self.message_win.info("Quad view: Top / Front / Side / 3D")
+            self._status_mode.setText("View: Quad")
+        else:
+            self._show_viewport()
+            self.message_win.info("Single viewport")
+            self._status_mode.setText(f"Drawing: {self._drawing_mode}")
+
+    def _apply_units(self, values: dict) -> None:
+        units = self._project_data.setdefault("units", {})
+        for key in ("length", "frequency", "time", "fmin", "fmax"):
+            if values.get(key) not in (None, ""):
+                units[key] = values[key]
+        self._apply_units_status()
+        self._mark_dirty(True)
+        self.message_win.info(
+            f"Units: {units.get('length', 'mm')}  {units.get('frequency', 'GHz')}")
+
+    def _on_units(self, values=None) -> None:
+        if values is None:
+            values = units_dialog(self, self._project_data.get("units") or {})
+            if values is None:
+                return
+        self._apply_units(values)
+
+    def _on_background(self) -> None:
+        display = self._project_data.setdefault("display", {})
+        cur = display.get("background", "default")
+        nxt = "dark" if cur != "dark" else "default"
+        display["background"] = nxt
+        self.message_win.info(f"Background: {nxt}")
+        self._mark_dirty(True)
+
+    def _on_boundaries(self) -> None:
+        bounds = self._project_data.setdefault("boundaries", {
+            "x": "open", "y": "open", "z": "open",
+        })
+        self.message_win.info(
+            f"Boundaries: x={bounds.get('x')} y={bounds.get('y')} z={bounds.get('z')} "
+            "(stored; not solved)")
+
+    def _on_history_list(self) -> None:
+        lines = []
+        for item in (self._project_data or {}).get("progress") or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                lines.append(f"{item[1]}: {item[0]}")
+            else:
+                lines.append(str(item))
+        self._history_lines = lines
+        if not lines:
+            self.message_win.info("History List is empty.")
+        else:
+            self.message_win.info(f"History List: {len(lines)} entries")
+            for line in lines[:12]:
+                self.message_win.info(f"  {line}")
+
+    def _on_mesh_view(self) -> None:
+        self.message_win.info(
+            "No mesh in this project. This product does not generate meshes.")
+
+    def _on_mesh_properties(self) -> None:
+        units = (self._project_data or {}).get("units") or {}
+        self.message_win.info(
+            "Mesh properties (read-only): no mesher. "
+            f"Length unit {units.get('length', 'mm')}.")
+
+    def _on_open_report(self) -> None:
+        self.msg_pane.setVisible(True)
+        self.message_win.info("Report: messages pane (no solver report file).")
+
+    def _on_wcs(self, mode: str) -> None:
+        self._wcs_mode = "local" if mode == "local" else "global"
+        self.message_win.info(
+            f"WCS: {self._wcs_mode} (display only; solids stay in global).")
+
+    def _on_material_library(self) -> None:
+        mats = (self._project_data or {}).get("materials") or []
+        names = [m.get("name", "?") for m in mats]
+        self._library_names = names
+        if names:
+            self.message_win.info("Material library: " + ", ".join(names[:12]))
+        else:
+            self.message_win.info("Material library is empty.")
+
+    def _on_source(self, kind: str) -> None:
+        label = {"field": "Field source", "plane_wave": "Plane wave",
+                 "farfield": "Farfield source"}.get(kind, kind)
+        rec = {"name": label, "type": kind}
+        bucket = self._project_data.setdefault("sources", [])
+        bucket.append(rec)
+        self._mark_dirty(True)
+        self.message_win.info(f"{label} added (not solved).")
+
+    def _on_smith(self) -> None:
+        self.result_plot.set_result({}, "Smith chart needs S-parameter samples.")
+        self._show_plot()
+        self.message_win.info("Smith chart: no S-parameter samples.")
+
+    def _on_field_sample(self, where: str) -> None:
+        self.message_win.info(
+            f"Field on {where}: no field samples in this project.")
+
+    def _on_macro(self, lang: str) -> None:
+        n = len((self._project_data or {}).get("progress") or [])
+        self.message_win.info(
+            f"{lang.upper()} macro editor is view-only. History has {n} entries "
+            "(macros are not executed).")
+
+    def _on_help_topic(self, topic: str) -> None:
+        text = {
+            "started": "CST Decoding is a viewer/editor for .cst files. "
+                       "It does not include a solver.",
+            "videos": "No bundled videos. Open a sample .cst from File → Open.",
+            "tutorials": "Load a project, edit solids in Modeling, inspect "
+                         "results under Post-Processing.",
+        }.get(topic, "Help")
+        self.message_win.info(text)
 
     def keyPressEvent(self, event):
         # cabdecoding Draw Window keys: F fit, X/Y/Z orthogonal
@@ -854,12 +1057,22 @@ class CSTMainWindow(QMainWindow):
             return
         fn()
 
+    def _sync_viewports(self, data=None) -> None:
+        data = data if data is not None else (self._project_data or {})
+        self.viewport.render_project(data)
+        self.viewport.set_hidden(self._hidden_parts)
+        self.viewport.set_cad_edges(self._cad_edges)
+        if getattr(self, "quad_view", None) is not None:
+            self.quad_view.render_project(data)
+            self.quad_view.set_hidden(self._hidden_parts)
+            self.quad_view.set_drawing_mode(self._drawing_mode)
+            self.quad_view.set_cad_edges(self._cad_edges)
+
     def _refresh_geometry(self) -> None:
         data = self._project_data or {}
         self.nav_tree.populate_from_project(data)
         self.nav_tree.set_hidden_names(self._hidden_parts)
-        self.viewport.render_project(data)
-        self.viewport.set_hidden(self._hidden_parts)
+        self._sync_viewports(data)
         if self._selected_solid:
             self.nav_tree.select_by_name(self._selected_solid, emit=False)
             self.viewport.select_solid(self._selected_solid)
@@ -1383,14 +1596,22 @@ class CSTMainWindow(QMainWindow):
         return folders
 
     def _nav_copy(self, kind: str, name: str) -> None:
-        QApplication.clipboard().setText(name or "")
+        if not name:
+            self.message_win.info("Copy: nothing selected.")
+            return
+        payload = None
+        item = self.nav_tree.tree.currentItem()
+        if item is not None:
+            payload = item.data(0, PAYLOAD_ROLE)
+        self.nav_tree._clipboard = (kind, name, payload)
+        QApplication.clipboard().setText(name)
         self.message_win.info(f"Copied {name}")
         self.status.showMessage(f"Copied {name}", 2000)
 
     def _nav_paste(self, kind: str, name: str) -> None:
         clip = self.nav_tree._clipboard
         if not clip:
-            self._nyi("Paste")
+            self.message_win.info("Paste: clipboard is empty.")
             return
         _ckind, src_name, _payload = clip
         src = self._find_component(src_name)
@@ -1446,7 +1667,7 @@ class CSTMainWindow(QMainWindow):
         remain = [c for c in comps if c.get("name") not in names]
         if len(remain) == len(comps) and kind not in ("solid", "component",
                                                       "collection", "group"):
-            self._nyi("Delete")
+            self.message_win.info(f"Cannot delete {kind or 'this item'}.")
             return
         if self._project_data is not None:
             def apply():
@@ -1826,8 +2047,7 @@ class CSTMainWindow(QMainWindow):
         self.nav_tree.set_hidden_names(self._hidden_parts)
         self.param_list.set_parameters(data.get("parameters") or [])
         self.progress_panel.set_progress(data.get("progress") or [])
-        self.viewport.render_project(data)
-        self.viewport.set_hidden(self._hidden_parts)
+        self._sync_viewports(data)
         if self._selected_solid:
             self.nav_tree.select_by_name(self._selected_solid, emit=False)
             self.viewport.select_solid(self._selected_solid)
@@ -1965,7 +2185,11 @@ class CSTMainWindow(QMainWindow):
         self._nyi("Export")
 
     def _show_viewport(self) -> None:
-        if getattr(self, "_view_stack", None) is not None:
+        if getattr(self, "_view_stack", None) is None:
+            return
+        if self._quad_mode:
+            self._view_stack.setCurrentWidget(self.quad_view)
+        else:
             self._view_stack.setCurrentWidget(self.viewport)
 
     def _show_plot(self) -> None:
@@ -2110,8 +2334,7 @@ class CSTMainWindow(QMainWindow):
         self.nav_tree.set_hidden_names(self._hidden_parts)
         self.param_list.set_parameters(self._project_data.get("parameters", []))
         self.progress_panel.set_progress(self._project_data.get("progress", []))
-        self.viewport.render_project(self._project_data)
-        self.viewport.set_hidden(self._hidden_parts)
+        self._sync_viewports(self._project_data)
         self._apply_units_status()
         self._sync_title()
 
