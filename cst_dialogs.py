@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from PyQt5.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QVBoxLayout,
+    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
 
@@ -247,6 +248,100 @@ def units_dialog(parent, units=None) -> dict | None:
         ("Fmin", "fmin", fmin),
         ("Fmax", "fmax", fmax),
     ])
+
+
+def history_list_dialog(parent, entries=None) -> list | None:
+    """Edit VBA history blocks. Returns the new list, or None if cancelled."""
+    rows = []
+    for item in entries or []:
+        if isinstance(item, dict):
+            cap = item.get("caption") or "macro"
+            code = item.get("code")
+            if isinstance(code, list):
+                code = "\n".join(str(ln) for ln in code)
+            rows.append({"caption": cap, "code": str(code or "")})
+        else:
+            rows.append({"caption": str(item), "code": ""})
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("History List")
+    dlg.resize(720, 480)
+    root = QVBoxLayout(dlg)
+    split = QHBoxLayout()
+    lst = QListWidget()
+    for rec in rows:
+        lst.addItem(rec["caption"])
+    split.addWidget(lst, 1)
+    right = QVBoxLayout()
+    cap_edit = QLineEdit()
+    code_edit = QPlainTextEdit()
+    code_edit.setPlaceholderText("VBA block")
+    right.addWidget(QLabel("Caption"))
+    right.addWidget(cap_edit)
+    right.addWidget(QLabel("Code"))
+    right.addWidget(code_edit, 1)
+    split.addLayout(right, 2)
+    root.addLayout(split, 1)
+
+    state = {"index": -1}
+
+    def flush():
+        i = state["index"]
+        if 0 <= i < len(rows):
+            rows[i]["caption"] = cap_edit.text().strip() or "macro"
+            rows[i]["code"] = code_edit.toPlainText()
+            lst.item(i).setText(rows[i]["caption"])
+
+    def show_row(i: int):
+        flush()
+        state["index"] = i
+        if 0 <= i < len(rows):
+            cap_edit.setText(rows[i]["caption"])
+            code_edit.setPlainText(rows[i]["code"])
+        else:
+            cap_edit.clear()
+            code_edit.clear()
+
+    def on_insert():
+        flush()
+        rows.append({"caption": "macro", "code": "' VBA\n"})
+        lst.addItem("macro")
+        lst.setCurrentRow(len(rows) - 1)
+
+    def on_delete():
+        i = lst.currentRow()
+        if i < 0 or i >= len(rows):
+            return
+        state["index"] = -1
+        rows.pop(i)
+        lst.takeItem(i)
+        if rows:
+            lst.setCurrentRow(min(i, len(rows) - 1))
+        else:
+            cap_edit.clear()
+            code_edit.clear()
+
+    lst.currentRowChanged.connect(show_row)
+    btns = QHBoxLayout()
+    ins = QPushButton("Insert")
+    ins.clicked.connect(on_insert)
+    dele = QPushButton("Delete")
+    dele.clicked.connect(on_delete)
+    btns.addWidget(ins)
+    btns.addWidget(dele)
+    btns.addStretch(1)
+    root.addLayout(btns)
+    box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    box.accepted.connect(dlg.accept)
+    box.rejected.connect(dlg.reject)
+    root.addWidget(box)
+    if rows:
+        lst.setCurrentRow(0)
+        show_row(0)
+    if dlg.exec_() != QDialog.Accepted:
+        return None
+    flush()
+    return rows
 
 
 def probe_dialog(parent, defaults=None) -> dict | None:

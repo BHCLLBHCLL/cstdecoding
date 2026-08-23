@@ -5,12 +5,13 @@ from cst_parser import new_project_files, open_cst, write_cst
 from cst_project import (
     UndoStack, append_history, archive_text, boolean_vba, box_mesh,
     brick_vba, cone_mesh, cylinder_mesh, discrete_port_vba, dump_parameters_json,
-    eval_excitations, eval_expr, eval_point, eval_range, intersect_bounds,
-    material_vba, mesh_bounds, merge_meshes, monitor_vba, next_port_number,
-    parse_hidden_solids, dump_hidden_solids, parse_set_point, probe_vba,
-    resolve_parameters, rotate_fn, set_parameter_in_mod, sphere_mesh,
-    torus_mesh, transform_component, transform_translate_vba, translate_fn,
-    union_bounds, unique_solid_name, waveguide_port_vba, write_parameters,
+    eval_excitations, eval_expr, eval_point, eval_range, history_code,
+    intersect_bounds, load_history, material_vba, mesh_bounds, merge_meshes,
+    monitor_vba, next_port_number, parse_hidden_solids, parse_mod_history,
+    dump_hidden_solids, parse_set_point, probe_vba, resolve_parameters,
+    rotate_fn, set_parameter_in_mod, sphere_mesh, torus_mesh,
+    transform_component, transform_translate_vba, translate_fn, union_bounds,
+    unique_solid_name, waveguide_port_vba, write_history, write_parameters,
 )
 from pathlib import Path
 
@@ -243,3 +244,49 @@ def test_port_monitor_probe_vba_and_eval():
     assert data["ports"][0]["p1_xyz"] == (5.0, 2.0, 0.0)
     assert abs(data["ports"][0]["p2_xyz"][2] + 1.6) < 1e-9
     assert data["probes"][0]["xyz"] == (5.0, 2.0, 1.6)
+
+
+def test_history_load_edit_delete_insert():
+    archive = {n: b for n, b in new_project_files()}
+    append_history(archive, "define brick: component1:box",
+                   brick_vba("box", "component1", "PEC",
+                             ("-1", "1"), ("-2", "2"), ("0", "0.5")))
+    hist = load_history(archive)
+    assert any(h["caption"] == "define brick: component1:box" for h in hist)
+    assert "With Brick" in history_code(hist[0] if hist[0]["caption"].startswith("define") else hist[-1])
+
+    hist[-1]["caption"] = "define brick: component1:renamed"
+    hist[-1]["code"] = ["' edited", "With Brick", "End With"]
+    write_history(archive, hist)
+    again = load_history(archive)
+    assert again[-1]["caption"] == "define brick: component1:renamed"
+    mod = archive_text(archive, "Model/3D/Model.mod")
+    assert "'@ define brick: component1:renamed" in mod
+    assert "'@ define brick: component1:box" not in mod
+    assert "'@ new project" in mod or "Component.New" in mod
+
+    write_history(archive, again[:-1])
+    gone = load_history(archive)
+    assert all(h["caption"] != "define brick: component1:renamed" for h in gone)
+
+    gone.append({"caption": "macro", "code": ["MsgBox \"hi\""]})
+    write_history(archive, gone)
+    inserted = load_history(archive)
+    assert inserted[-1]["caption"] == "macro"
+    assert "MsgBox" in history_code(inserted[-1])
+    mod = archive_text(archive, "Model/3D/Model.mod")
+    assert "'@ macro" in mod
+
+
+def test_parse_mod_history_new_project():
+    text = (
+        "'@ new project\n"
+        "With Units\n"
+        "End With\n"
+        "'@ define brick: c:s\n\n"
+        "[VERSION]2024.0|33.0.1|20230801[/VERSION]\n"
+        "With Brick\nEnd With\n"
+    )
+    blocks = parse_mod_history(text)
+    assert [b["caption"] for b in blocks] == ["new project", "define brick: c:s"]
+    assert "With Brick" in history_code(blocks[1])

@@ -889,3 +889,69 @@ def test_m9_ribbon_no_nyi(viewer):
     assert clicked >= 20
     log = viewer.message_win.text.toPlainText()
     assert "not yet available" not in log
+
+
+def test_m10_history_edit_and_macro(viewer):
+    from cst_parser import new_project_files
+    from cst_project import append_history, brick_vba, load_history
+
+    viewer._on_new()
+    viewer._archive = {n: b for n, b in new_project_files()}
+    append_history(viewer._archive, "define brick: component1:box",
+                   brick_vba("box", "component1", "PEC",
+                             ("-1", "1"), ("-1", "1"), ("0", "1")))
+    viewer._on_history_list()
+    assert any("define brick" in line for line in viewer._history_lines)
+
+    viewer._on_history_list(action="edit", index=0,
+                            caption="define brick: component1:edited",
+                            code='With Brick\n     .Name "edited"\nEnd With\n')
+    hist = load_history(viewer._archive)
+    assert hist[0]["caption"] == "define brick: component1:edited"
+    mod = viewer._archive["Model/3D/Model.mod"].decode("latin-1")
+    assert "'@ define brick: component1:edited" in mod
+
+    n = len(hist)
+    viewer._on_macro("vba", code='MsgBox "hi"\n', caption="vba hello")
+    hist = load_history(viewer._archive)
+    assert len(hist) == n + 1
+    assert hist[-1]["caption"] == "vba hello"
+
+    viewer._on_history_list(action="delete", index=len(hist) - 1)
+    hist = load_history(viewer._archive)
+    assert all(h["caption"] != "vba hello" for h in hist)
+    assert "not yet available" not in viewer.message_win.text.toPlainText()
+
+
+def test_m10_export_import_sat(viewer):
+    from pathlib import Path
+
+    viewer._on_new()
+    viewer._add_shape("brick", {
+        "name": "patch", "component": "component1", "material": "PEC",
+        "xmin": "-2", "xmax": "2", "ymin": "-3", "ymax": "3",
+        "zmin": "0", "zmax": "0.5",
+    })
+    scratch = Path(__file__).resolve().parent / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    sat = scratch / "m10_patch.sat"
+    if sat.exists():
+        sat.unlink()
+    viewer._on_export(str(sat))
+    assert sat.is_file()
+    text = sat.read_text(encoding="ascii")
+    assert text.startswith("700 ")
+    assert "component1:patch" in text
+    assert "Exported" in viewer.message_win.text.toPlainText()
+
+    other = cst_gui.CSTMainWindow(enable_3d=False)
+    try:
+        other._on_new()
+        other._on_import(str(sat))
+        names = {c["name"] for c in other._project_data["components"]}
+        assert "component1:patch" in names
+        rec = other._find_component("component1:patch")
+        assert rec["bounds"][0] == -2
+        assert rec["mesh"]["faces"]
+    finally:
+        other.close()

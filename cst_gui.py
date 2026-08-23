@@ -30,7 +30,8 @@ from cst_parser import (
 )
 from cst_project import (
     UndoStack, append_change_material, append_component_delete,
-    append_component_new, append_group_item, append_history,
+    append_component_new, append_group_item, append_history, history_code,
+    history_entry, load_history, write_history,
     append_solid_delete, append_solid_rename, archive_get, boolean_vba,
     bounds_center, box_mesh, brick_vba, cone_mesh, cone_vba, cylinder_mesh,
     cylinder_vba, discrete_port_vba, eval_expr, eval_excitations, eval_point,
@@ -43,7 +44,8 @@ from cst_project import (
     unique_solid_name, waveguide_port_vba, write_hidden, write_parameters,
 )
 from cst_dialogs import (
-    boolean_dialog, component_dialog, discrete_port_dialog, material_dialog,
+    boolean_dialog, component_dialog, discrete_port_dialog,
+    history_list_dialog, material_dialog,
     monitor_dialog, probe_dialog, shape_dialog, transform_dialog,
     units_dialog, waveguide_port_dialog,
 )
@@ -131,7 +133,8 @@ class CSTMainWindow(QMainWindow):
         self.act_save = act("&Save", self._on_save, QKeySequence.Save, "save")
         self.act_save_as = act("Save &As…", self._on_save_as,
                                QKeySequence("Ctrl+Shift+S"), "save")
-        self.act_export = act("&Export…", self._on_export, None, "export")
+        self.act_import = act("&Import SAT…", self._on_import, None, "open")
+        self.act_export = act("&Export SAT…", self._on_export, None, "export")
         self.act_exit = act("E&xit", self.close, QKeySequence.Quit)
         self.act_undo = act("&Undo", self._on_undo, QKeySequence.Undo, "undo")
         self.act_redo = act("&Redo", self._on_redo, QKeySequence.Redo, "redo")
@@ -183,6 +186,7 @@ class CSTMainWindow(QMainWindow):
         self._file_menu.addAction(self.act_save)
         self._file_menu.addAction(self.act_save_as)
         self._file_menu.addSeparator()
+        self._file_menu.addAction(self.act_import)
         self._file_menu.addAction(self.act_export)
         self._file_menu.addSeparator()
         self._recent_menu = self._file_menu.addMenu("Recent Files")
@@ -299,7 +303,8 @@ class CSTMainWindow(QMainWindow):
         ]))
         layout.addWidget(self._make_ribbon_group("Edit", [
             ("Properties", "editprops", self._on_edit_properties),
-            ("History List", "history", lambda: self._on_history_list()),
+            ("History List", "history",
+             lambda: self._on_history_list(interactive=self._want_dialogs())),
             ("Delete", "delete", self._on_delete),
         ]))
         layout.addWidget(self._make_ribbon_group("Parameters", [
@@ -887,20 +892,72 @@ class CSTMainWindow(QMainWindow):
             f"Boundaries: x={bounds.get('x')} y={bounds.get('y')} z={bounds.get('z')} "
             "(stored; not solved)")
 
-    def _on_history_list(self) -> None:
-        lines = []
-        for item in (self._project_data or {}).get("progress") or []:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                lines.append(f"{item[1]}: {item[0]}")
-            else:
-                lines.append(str(item))
-        self._history_lines = lines
-        if not lines:
+    def _want_dialogs(self) -> bool:
+        return os.environ.get("QT_QPA_PLATFORM") != "offscreen"
+
+    def _sync_history_progress(self, entries) -> None:
+        recs = list(entries or [])
+        self._project_data["history"] = recs
+        lines = [(e.get("caption") or "op", "history") for e in recs]
+        self._project_data["progress"] = lines or [("History List", "Ready")]
+        self._history_lines = [f"history: {c}" for c, _ in lines]
+        if getattr(self, "progress_panel", None) is not None:
+            self.progress_panel.set_progress(self._project_data["progress"])
+
+    def _apply_history(self, entries) -> None:
+        recs = [history_entry(e.get("caption") or "macro", history_code(e))
+                for e in (entries or [])]
+
+        def apply():
+            write_history(self._archive, recs)
+            self._sync_history_progress(recs)
+
+        self._mutate("edit history", apply)
+
+    def _on_history_list(self, action=None, index=None, caption=None, code=None,
+                         interactive=False) -> None:
+        entries = [dict(e) for e in load_history(self._archive)]
+        if action == "insert":
+            pos = len(entries) if index is None else max(0, min(int(index), len(entries)))
+            entries.insert(pos, history_entry(caption or "macro",
+                                              code or "' VBA\n"))
+            self._apply_history(entries)
+            self.message_win.info(f"Inserted history: {caption or 'macro'}")
+            return
+        if action == "edit":
+            if index is None or not (0 <= int(index) < len(entries)):
+                self.message_win.info("History edit: bad index.")
+                return
+            rec = entries[int(index)]
+            if caption is not None:
+                rec["caption"] = caption
+            if code is not None:
+                rec["code"] = code.split("\n") if isinstance(code, str) else code
+            entries[int(index)] = history_entry(rec.get("caption") or "macro",
+                                                history_code(rec))
+            self._apply_history(entries)
+            self.message_win.info(f"Edited history [{index}]")
+            return
+        if action == "delete":
+            if index is None or not (0 <= int(index) < len(entries)):
+                self.message_win.info("History delete: bad index.")
+                return
+            gone = entries.pop(int(index))
+            self._apply_history(entries)
+            self.message_win.info(f"Deleted history: {gone.get('caption')}")
+            return
+        self._history_lines = [e.get("caption") or "" for e in entries]
+        if not entries:
             self.message_win.info("History List is empty.")
         else:
-            self.message_win.info(f"History List: {len(lines)} entries")
-            for line in lines[:12]:
-                self.message_win.info(f"  {line}")
+            self.message_win.info(f"History List: {len(entries)} entries")
+            for rec in entries[:12]:
+                self.message_win.info(f"  {rec.get('caption')}")
+        if interactive:
+            result = history_list_dialog(self, entries)
+            if result is not None:
+                self._apply_history(result)
+                self.message_win.info(f"History List saved ({len(result)} entries)")
 
     def _on_mesh_view(self) -> None:
         self.message_win.info(
@@ -948,11 +1005,17 @@ class CSTMainWindow(QMainWindow):
         self.message_win.info(
             f"Field on {where}: no field samples in this project.")
 
-    def _on_macro(self, lang: str) -> None:
-        n = len((self._project_data or {}).get("progress") or [])
+    def _on_macro(self, lang: str, code=None, caption=None) -> None:
+        if code is not None:
+            self._on_history_list(
+                action="insert",
+                caption=caption or f"{lang} macro",
+                code=code)
+            return
+        n = len(load_history(self._archive))
         self.message_win.info(
-            f"{lang.upper()} macro editor is view-only. History has {n} entries "
-            "(macros are not executed).")
+            f"{lang.upper()} macro: History has {n} entries "
+            "(macros are stored, not executed).")
 
     def _on_help_topic(self, topic: str) -> None:
         text = {
@@ -2178,11 +2241,75 @@ class CSTMainWindow(QMainWindow):
             self.message_win.error(f"Save failed: {exc}")
             return False
 
-    def _on_export(self) -> None:
-        if getattr(self, "_view_stack", None) is not None and self._view_stack.currentWidget() is self.result_plot:
+    def _on_export(self, path=None) -> None:
+        if (path is None
+                and getattr(self, "_view_stack", None) is not None
+                and self._view_stack.currentWidget() is self.result_plot):
             self._on_export_plot()
             return
-        self._nyi("Export")
+        if path is None:
+            if not self._want_dialogs():
+                self.message_win.info("Export SAT: no path.")
+                return
+            path, filt = QFileDialog.getSaveFileName(
+                self, "Export CAD", "model.sat",
+                "SAT ASCII (*.sat);;STEP (*.stp *.step)")
+            if not path:
+                return
+        try:
+            lower = str(path).lower()
+            if lower.endswith((".stp", ".step")):
+                from cst_cad import write_step
+                if not write_step(path, self._project_data):
+                    self.message_win.info(
+                        "STEP export needs OpenCASCADE or CadQuery. Use SAT.")
+                    return
+            else:
+                if not lower.endswith(".sat"):
+                    path = str(path) + ".sat"
+                from cst_cad import write_sat
+                write_sat(path, self._project_data)
+            self.message_win.info(f"Exported {os.path.basename(path)}")
+        except Exception as exc:
+            self.message_win.error(f"Export failed: {exc}")
+
+    def _on_import(self, path=None) -> None:
+        if path is None:
+            if not self._want_dialogs():
+                self.message_win.info("Import SAT: no path.")
+                return
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Import SAT", "",
+                "SAT ASCII (*.sat);;All Files (*)")
+            if not path:
+                return
+        try:
+            from cst_cad import sat_to_components
+            text = open(path, encoding="utf-8", errors="replace").read()
+            comps = sat_to_components(text)
+            if not comps:
+                self.message_win.warn("Import SAT: no solids in file.")
+                return
+
+            def apply():
+                bucket = self._project_data.setdefault("components", [])
+                names = {c.get("name") for c in bucket}
+                for rec in comps:
+                    name = rec.get("name") or "solid"
+                    if name in names:
+                        name = unique_solid_name(names, "imported",
+                                                 name.split(":")[-1])
+                        rec = dict(rec)
+                        rec["name"] = name
+                    names.add(name)
+                    bucket.append(rec)
+                self._refresh_geometry()
+
+            self._mutate("import sat", apply)
+            self.message_win.info(
+                f"Imported {len(comps)} solid(s) from {os.path.basename(path)}")
+        except Exception as exc:
+            self.message_win.error(f"Import failed: {exc}")
 
     def _show_viewport(self) -> None:
         if getattr(self, "_view_stack", None) is None:

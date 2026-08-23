@@ -236,26 +236,132 @@ def history_entry(caption: str, code: str) -> dict:
     }
 
 
-def append_history(archive: dict, caption: str, code: str) -> None:
-    block = format_mod_block(caption, code)
-    mod = archive_text(archive, _MODEL_MOD)
-    archive_set(archive, _MODEL_MOD, (mod.rstrip() + block).encode("latin-1", "replace"))
+def history_code(entry) -> str:
+    """Join a history entry's VBA (list or string) into one block."""
+    if not entry:
+        return ""
+    if isinstance(entry, str):
+        return entry.strip("\n") + "\n"
+    code = entry.get("code") if isinstance(entry, dict) else entry
+    if isinstance(code, list):
+        return "\n".join(str(ln).rstrip() for ln in code).strip("\n") + "\n"
+    return str(code or "").strip("\n") + "\n"
+
+
+def parse_mod_history(text: str) -> list[dict]:
+    """Parse `'@ caption` VBA blocks from Model.mod."""
+    if not text:
+        return []
+    src = text.replace("\r\n", "\n")
+    matches = list(re.finditer(
+        r"^'@ (?P<caption>[^\n]*)\n"
+        r"(?:\[VERSION\](?P<version>[^\[]*)\[/VERSION\]\n)?"
+        r"(?P<code>.*?)(?=^'@ |\Z)",
+        src, re.M | re.S))
+    out = []
+    for m in matches:
+        rec = history_entry(m.group("caption") or "", m.group("code") or "")
+        ver = (m.group("version") or "").strip()
+        if ver:
+            rec["version"] = ver
+        out.append(rec)
+    return out
+
+
+def _mod_prefix(text: str) -> str:
+    src = (text or "").replace("\r\n", "\n")
+    m = re.search(r"^'@", src, re.M)
+    if not m:
+        return src.rstrip()
+    return src[:m.start()].rstrip()
+
+
+def _history_json_doc(archive: dict) -> dict:
     raw = archive_get(archive, _HISTORY_JSON)
     if raw:
         try:
             doc = json.loads(raw.decode("utf-8", "replace"))
+            if isinstance(doc, dict):
+                doc.setdefault("history", [])
+                return doc
         except json.JSONDecodeError:
-            doc = {"general": {}, "history": []}
+            pass
+    return {
+        "general": {
+            "version": "2024.0",
+            "acis": "33.0.1",
+            "project_type": "MWS",
+            "length": "mm",
+        },
+        "history": [],
+    }
+
+
+def load_history(archive: dict) -> list[dict]:
+    """ModelHistory.json if it has entries, otherwise Model.mod `'@` blocks."""
+    doc = _history_json_doc(archive)
+    hist = doc.get("history") or []
+    if hist:
+        out = []
+        for hop in hist:
+            if not isinstance(hop, dict):
+                continue
+            rec = history_entry(hop.get("caption") or hop.get("type") or "op",
+                                history_code(hop))
+            if hop.get("version"):
+                rec["version"] = hop["version"]
+            rec["hidden"] = bool(hop.get("hidden"))
+            rec["type"] = hop.get("type") or "vba"
+            out.append(rec)
+        return out
+    return parse_mod_history(archive_text(archive, _MODEL_MOD))
+
+
+def write_history(archive: dict, entries: list) -> None:
+    """Rewrite ModelHistory.json and sync matching `'@` blocks in Model.mod."""
+    normalized = []
+    for item in entries or []:
+        if isinstance(item, dict):
+            rec = history_entry(item.get("caption") or "macro", history_code(item))
+            rec["hidden"] = bool(item.get("hidden"))
+            rec["type"] = item.get("type") or "vba"
+            if item.get("version"):
+                rec["version"] = item["version"]
+        else:
+            rec = history_entry("macro", str(item))
+        normalized.append(rec)
+
+    old = _history_json_doc(archive)
+    old_caps = {h.get("caption") for h in (old.get("history") or [])
+                if isinstance(h, dict) and h.get("caption")}
+    had_json = bool(archive_get(archive, _HISTORY_JSON) and old.get("history"))
+
+    doc = old
+    doc["history"] = normalized
+    blob = json.dumps(doc, indent=4) + "\n"
+    archive_set(archive, _HISTORY_JSON, blob.encode("utf-8"))
+
+    mod = archive_text(archive, _MODEL_MOD)
+    prefix = _mod_prefix(mod)
+    blocks = parse_mod_history(mod)
+    new_caps = {r.get("caption") for r in normalized}
+    if had_json and old_caps:
+        kept = [b for b in blocks if b.get("caption") not in old_caps]
     else:
-        doc = {
-            "general": {
-                "version": "2024.0",
-                "acis": "33.0.1",
-                "project_type": "MWS",
-                "length": "mm",
-            },
-            "history": [],
-        }
+        kept = [b for b in blocks if b.get("caption") not in new_caps]
+    parts = [prefix] if prefix else []
+    for rec in kept + normalized:
+        parts.append(format_mod_block(rec.get("caption") or "macro",
+                                      history_code(rec)).strip("\n"))
+    text = "\n".join(p for p in parts if p is not None).rstrip() + "\n"
+    archive_set(archive, _MODEL_MOD, text.encode("latin-1", "replace"))
+
+
+def append_history(archive: dict, caption: str, code: str) -> None:
+    block = format_mod_block(caption, code)
+    mod = archive_text(archive, _MODEL_MOD)
+    archive_set(archive, _MODEL_MOD, (mod.rstrip() + block).encode("latin-1", "replace"))
+    doc = _history_json_doc(archive)
     doc.setdefault("history", []).append(history_entry(caption, code))
     blob = json.dumps(doc, indent=4) + "\n"
     archive_set(archive, _HISTORY_JSON, blob.encode("utf-8"))
