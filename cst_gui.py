@@ -220,20 +220,20 @@ class CSTMainWindow(QMainWindow):
 
         self.setMenuWidget(host)
         self._ribbon_host = host
-        self._ribbon_content_height = 104
+        self._ribbon_content_height = 88
 
     def _make_ribbon_button(self, text, icon_name, slot=None, big=False,
                             enabled=True, tooltip=""):
         b = QToolButton()
         b.setObjectName("RibbonButton")
-        size = 32
+        size = 24
         b.setIcon(AppIcons.get(icon_name, size))
         b.setIconSize(QSize(size, size))
         b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         b.setText(text)
         b.setAutoRaise(True)
-        b.setFixedHeight(82)
-        b.setMinimumWidth(64 if big else 60)
+        b.setFixedHeight(56)
+        b.setMinimumWidth(52 if big else 48)
         if tooltip:
             b.setToolTip(tooltip)
         if not enabled:
@@ -248,9 +248,11 @@ class CSTMainWindow(QMainWindow):
         box = QGroupBox(title)
         box.setObjectName("RibbonGroup")
         bl = QVBoxLayout(box)
-        bl.setContentsMargins(4, 2, 4, 14)
+        bl.setContentsMargins(3, 1, 3, 6)
+        bl.setSpacing(0)
         row = QHBoxLayout()
-        row.setSpacing(2)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(1)
         for i, item in enumerate(buttons):
             extra = {}
             if len(item) == 4:
@@ -624,24 +626,24 @@ class CSTMainWindow(QMainWindow):
                 border: 1px solid #b4bcc4;
                 border-top: none;
                 border-bottom: none;
-                margin: 0px 2px 12px 2px;
-                padding: 2px 4px 2px 4px;
+                margin: 0px 2px 6px 2px;
+                padding: 1px 2px 0px 2px;
                 background: transparent;
                 font-size: 10px;
             }
             QGroupBox#RibbonGroup::title {
                 subcontrol-origin: margin;
                 subcontrol-position: bottom center;
-                padding: 0 6px;
+                padding: 0 4px;
                 color: #444;
             }
             QToolButton#RibbonButton {
                 background: transparent;
                 border: 1px solid transparent;
                 border-radius: 3px;
-                padding: 5px 7px;
+                padding: 1px 3px 0px 3px;
                 color: #222;
-                font-size: 11px;
+                font-size: 10px;
             }
             QToolButton#RibbonButton:hover {
                 background: #c5d8ec;

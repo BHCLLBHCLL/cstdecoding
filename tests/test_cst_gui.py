@@ -60,7 +60,7 @@ def test_icon_sizes_unified(viewer):
         for btn in viewer.findChildren(QToolButton)
         if btn.objectName() == "RibbonButton"
     }
-    assert ribbon == {32}
+    assert ribbon == {24}
     assert viewer.nav_tree.tree.iconSize().width() == 14
     names = [n[6:] for n in dir(cst_gui.AppIcons) if n.startswith("_draw_")]
     assert "brick" in names and "component" in names
