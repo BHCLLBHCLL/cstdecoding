@@ -88,30 +88,41 @@ def _typename(chain, type_names: dict) -> str:
     return type_names.get(chain[0][2], f"#{chain[0][2]}")
 
 
+class _Ents(list):
+    """Entity list carrying the SAB sequence-resolution cache."""
+
+
 def _scan_entities(data: bytes, start: int) -> list[dict]:
     type_names: dict[int, str] = {}
     pos = start
-    ents: list[dict] = []
+    ents: list[dict] = _Ents()
     cur = None
     while pos < len(data) - 16:
         tag = data[pos]
         if tag == 0x0B:
             pos += 1
         elif tag in (0x0A, 0x0F, 0x10, 0x11):
+            pre = tag
             pos += 1
             if pos < len(data) and data[pos] in (0x0D, 0x0E):
                 r = _parse_chain(data, pos, type_names)
                 if r[0] == ("END",):
                     break
                 chain, pos = r
-                cur = {"type": _typename(chain, type_names), "fields": []}
+                # Only 0x11-prefixed records occupy a SAB sequence slot;
+                # 0x0A/0x0F/0x10 and bare-chain records are inline
+                # sub-records (exactcur/parcur/skinsur/nullbs...) that
+                # entity pointers do NOT count.
+                cur = {"type": _typename(chain, type_names), "fields": [],
+                       "sq": pre == 0x11}
                 ents.append(cur)
         elif tag in (0x0D, 0x0E):
             r = _parse_chain(data, pos, type_names)
             if r[0] == ("END",):
                 break
             chain, pos = r
-            cur = {"type": _typename(chain, type_names), "fields": []}
+            cur = {"type": _typename(chain, type_names), "fields": [],
+                   "sq": False}
             ents.append(cur)
         elif tag == 0x07:
             ln = data[pos + 1]
@@ -179,6 +190,46 @@ def _resolve(ents, base: int, rel) -> Optional[dict]:
     rel = _as_ptr(rel)
     if rel is None:
         return None
+    # SAB entity pointers are body-relative and count ONLY 0x11-prefixed
+    # records (1-based from the record after the body).  Inline sub-records
+    # (0x0A/0x0F/0x10/bare chain) share no sequence slot, so a plain
+    # ``base + rel`` mis-resolves every pointer past the first sub-record.
+    cache = getattr(ents, "_seqcache", None)
+    if cache is None:
+        cache = {}
+        try:
+            ents._seqcache = cache
+        except AttributeError:
+            cache = None
+    if cache is not None and base in cache:
+        idx = cache[base].get(rel)
+        if idx is not None:
+            return ents[idx]
+    elif cache is not None:
+        e = base + 1
+        while e < len(ents) and ents[e]["type"] != "body":
+            e += 1
+        mapping = {}
+        seq = 0
+        for i in range(base + 1, e):
+            if ents[i].get("sq"):
+                seq += 1
+                mapping.setdefault(seq, i)
+        cache[base] = mapping
+        idx = mapping.get(rel)
+        if idx is not None:
+            return ents[idx]
+    if cache is None:
+        # Plain list without flags: legacy arithmetic fallback.
+        idx = base + rel
+        if 0 <= idx < len(ents):
+            return ents[idx]
+        if 0 <= rel < len(ents):
+            return ents[rel]
+        return None
+    # Sequence lookup failed (pointer past a sub-record tail or a file whose
+    # records are all 0x11): fall back to raw arithmetic so simple bodies
+    # and synthetic test fixtures keep working.
     idx = base + rel
     if 0 <= idx < len(ents):
         return ents[idx]
@@ -439,6 +490,15 @@ def _clip_poly_to_ends(pts, a, b, chord_eps: float = 0.05) -> list:
     lab = float(np.linalg.norm(ab))
     if lab < 1e-12 or len(out) < 3:
         return [a, b] if lab >= 1e-12 else out
+    # Following-nubs / intcurve packing can yield a local-frame control
+    # polygon (e.g. z≈33) glued onto the real world vertices.  That draws
+    # a floating trapezoid above sh_cans:top.  Interiors must stay near
+    # this bounded edge.
+    mid = 0.5 * (a + b)
+    radius = max(2.5 * lab, 3.0)
+    for p in out[1:-1]:
+        if float(np.linalg.norm(np.asarray(p, dtype=float) - mid)) > radius:
+            return [a, b]
     # Long near-straight samples are leftover intcurve chords; keep the
     # interior points so a slight off-plane deviation drops the bridge
     # from the on-plane set instead of merging shield-can islands.
@@ -1409,6 +1469,44 @@ def _collect_all_body_plane_edges(ents, base, end, surf, eps: float = 0.005) -> 
     return edges_out
 
 
+def _filter_bridge_edges(edges_sampled: list, min_edges: int = 6,
+                        median_ratio: float = 2.5, abs_max: float = 20.0) -> list:
+    """Drop cross-can "bridge" edges that weld two disjoint cans into one.
+
+    Variant coedge layouts or neighbouring-face samples sometimes leave a
+    handful of edges whose endpoints sit on two different shield cans and
+    whose midpoint hangs in empty space.  Those edges weld otherwise
+    disconnected outlines into a spanning scribble when chained or hulled.
+    We drop edges whose length is a clear outlier: longer than both
+    ``median_ratio × median_len`` and ``abs_max`` mm.  The median is used
+    (instead of a percentile) because it is robust against the very
+    outliers we want to remove — two stray 25~29 mm bridge edges cannot
+    inflate it.  ``abs_max=20`` keeps every legitimate shield-can lid /
+    rim edge we observed (can-A longest true contour edge = 19.53 mm)
+    while still dropping all confirmed bridge edges (≥ 24 mm).
+    """
+    usable = [e for e in edges_sampled if len(e) >= 2]
+    if len(usable) < min_edges:
+        return list(usable)
+    lens = np.array(
+        [float(np.linalg.norm(np.asarray(e[-1], dtype=float)
+                              - np.asarray(e[0], dtype=float)))
+         for e in usable], dtype=float)
+    med = float(np.median(lens))
+    threshold = max(abs_max, median_ratio * med)
+    # With many well-distributed edges (e.g. a mmbrd / mdbrd board plate
+    # that fell through to the fallback path), the median can sit near a
+    # small chamfer length while the plate's real outline edges are tens
+    # of mm long.  Loosen the rule heavily — full plates cannot produce
+    # cross-can scribbles anyway.
+    if len(lens) >= 20:
+        threshold = max(abs_max, 5.0 * med)
+    kept = [e for e, l in zip(usable, lens) if l <= threshold]
+    if len(kept) < min_edges:
+        kept = [e for e, l in zip(usable, lens) if l <= max(abs_max, 8.0 * med)]
+    return kept
+
+
 def _cluster_edge_groups(edges, gap: float = 0.2) -> list:
     """Group polylines that share endpoints (disconnected cans stay separate)."""
     usable = [e for e in edges if len(e) >= 2]
@@ -1483,9 +1581,92 @@ def _hulls_from_clusters(clusters, surf) -> list:
     return hulls
 
 
+def _pt_key(p, nd: int = 3):
+    return (round(float(p[0]), nd), round(float(p[1]), nd), round(float(p[2]), nd))
+
+
+def _drop_weld_edges(edges, min_len: float = 12.0, min_side: int = 3) -> list:
+    """Drop long edges whose removal splits two substantial vertex groups.
+
+    A 24 mm chord between two shield cans is a weld; a 28 mm tab that only
+    isolates one vertex is kept so the can outline stays complete.
+    """
+    usable = [e for e in edges if len(e) >= 2]
+    if len(usable) < 4:
+        return list(edges)
+
+    def components(skip):
+        parent = {}
+
+        def find(k):
+            parent.setdefault(k, k)
+            while parent[k] != k:
+                parent[k] = parent[parent[k]]
+                k = parent[k]
+            return k
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        verts = set()
+        for i, e in enumerate(usable):
+            ka, kb = _pt_key(e[0]), _pt_key(e[-1])
+            verts.add(ka)
+            verts.add(kb)
+            if i in skip:
+                continue
+            union(ka, kb)
+        groups = {}
+        for k in verts:
+            groups.setdefault(find(k), set()).add(k)
+        return groups, find
+
+    skip = set()
+    order = sorted(range(len(usable)),
+                   key=lambda i: -_dist(usable[i][0], usable[i][-1]))
+    changed = True
+    while changed:
+        changed = False
+        for i in order:
+            if i in skip:
+                continue
+            e = usable[i]
+            if _dist(e[0], e[-1]) < min_len:
+                continue
+            groups, find = components(skip | {i})
+            ra, rb = find(_pt_key(e[0])), find(_pt_key(e[-1]))
+            if ra == rb:
+                continue
+            na = len(groups.get(ra, ()))
+            nb = len(groups.get(rb, ()))
+            if na >= min_side and nb >= min_side:
+                skip.add(i)
+                changed = True
+                break
+    if not skip:
+        return list(edges)
+    kept = [e for i, e in enumerate(usable) if i not in skip]
+    return kept if len(kept) >= 3 else list(edges)
+
+
 def _select_island_clusters(edges, surf, bridge: float = 12.0) -> list:
     """Pick disconnected on-plane edge groups (cans vs one PCB plate)."""
     clusters = _cluster_edge_groups(edges)
+    # If exact endpoint clustering already isolated several substantial
+    # islands, return them unchanged.  The bridge-length heuristic below
+    # exists to split a single "plate + cans" blob whose long plate edges
+    # weld the islands together; running it on already-separated can lips
+    # wrongly deletes their legitimate 20~23 mm outline edges and shatters
+    # each lip into scraps.
+    substantial_clusters = []
+    for cl in clusters:
+        hs = _hulls_from_clusters([cl], surf)
+        if hs and _abs_loop_area(hs[0]) > 3.0:
+            substantial_clusters.append(cl)
+    if len(substantial_clusters) >= 2:
+        return clusters
     short = [e for e in edges if len(e) >= 2 and _dist(e[0], e[-1]) <= bridge]
     if len(short) < 8:
         return clusters
@@ -1619,18 +1800,89 @@ def _tessellate_face(ents, base, face, end=None) -> list:
                     mids2 = np.column_stack([np.dot(mids - s_origin, u_s), np.dot(mids - s_origin, v_s)])
                     ref_area = float((mids2[:, 0].max() - mids2[:, 0].min()) * (mids2[:, 1].max() - mids2[:, 1].min()))
         body_plane_edges = _collect_all_body_plane_edges(ents, base, end, surf)
+        # Filter spurious cross-can bridge edges for the TOP-RIM fallback
+        # only.  The main-flange hull fallback must NOT be filtered: it
+        # breaks can-A's 752 mm² convex hull (which legitimately includes
+        # (45,-18)) into a 45 mm² scrap, because can-A's long outline edges
+        # (20~23 mm) are close enough to the 20 mm bridge cap to get cut.
+        body_plane_edges_f = _filter_bridge_edges(body_plane_edges)
         current_max_area = max((_area2_of(p) for p in polys), default=0.0)
         plane_cluster_tris = None
-        groups = _hull_groups_from_edges(body_plane_edges, surf) if body_plane_edges else []
+        # Two group sets:
+        #   groups_raw  — no bridge filtering; used for every main-flange /
+        #                 wrap-face decision.  Produces 3 groups for sh_cans
+        #                 bottom flange (can-A hull 752 mm² + scraps).
+        #   groups_f    — bridge-filtered; used ONLY inside the top-rim
+        #                 variant-layout fallback below because that face has
+        #                 no walk/coedge recovery and depends on raw body-wide
+        #                 plane edges where two 24~29 mm cross-can bridges
+        #                 would weld the two can rims together.
+        groups_raw = _hull_groups_from_edges(body_plane_edges, surf) if body_plane_edges else []
+        groups_f = _hull_groups_from_edges(body_plane_edges_f, surf) if body_plane_edges_f else []
+        groups = groups_raw
         # Top-rim / lid face whose loop coedges use a variant layout: the
         # pointer walk recovers nothing and the face's own coedges all resolve
         # to edges on other planes (face_plane_edges empty).  The body-wide
         # plane edges still trace the outline, so chain them directly to
         # recover the face (e.g. sh_cans:top top-rim lid at z=-3.2775).
         if not polys and not face_plane_edges and len(body_plane_edges) >= 8:
-            closed_loops = _chain_plane_loops(body_plane_edges)
-            if closed_loops and _abs_loop_area(closed_loops[0]) > 30.0:
-                polys = closed_loops
+            # Prefer islands after dropping cross-can welds.  Unfiltered
+            # chaining plus convex hull filled the PCB between lids.
+            split_edges = _drop_weld_edges(body_plane_edges)
+            split_groups = (_hull_groups_from_edges(split_edges, surf)
+                            if split_edges else [])
+            if len(split_groups) >= 2:
+                extra = []
+                for g in split_groups:
+                    extra.extend(_triangulate_plane(g))
+                if extra:
+                    plane_cluster_tris = extra
+            elif len(groups) >= 2:
+                extra = []
+                for g in groups:
+                    extra.extend(_triangulate_plane(g))
+                if extra:
+                    plane_cluster_tris = extra
+            else:
+                closed_loops = _chain_plane_loops(body_plane_edges)
+                if closed_loops and _abs_loop_area(closed_loops[0]) > 30.0:
+                    if len(closed_loops) >= 2:
+                        extra = []
+                        for lp in closed_loops:
+                            extra.extend(_triangulate_plane([lp]))
+                        if extra:
+                            plane_cluster_tris = extra
+                    else:
+                        polys = closed_loops
+        current_max_area = max((_area2_of(p) for p in polys), default=0.0)
+        # A pointer walk that closed at least one real loop is a successful
+        # recovery — the "walk recovered almost nothing" fallback below must
+        # not fire for a legitimately small face (e.g. the sh_cans:top bottom
+        # lip strip, 28 mm² vs the ~700 mm² bottom island sum), or it would
+        # triangulate the whole plane and overlap the neighbouring bottom face.
+        walk_recovered = any(wc and len(wp) >= 3 for wp, wc in walked)
+        # Single small closed contour from the body-plane edges recovers a
+        # face whose pointer walk failed completely (e.g. the thin vertical
+        # wall of a shield can whose variant coedges only walk three sides).
+        # A sole group smaller than 80 mm² is unambiguous — it cannot be a
+        # big flange or lid, so adopting it cannot span across other cans.
+        if not polys and len(groups) == 1 and _abs_loop_area(groups[0][0]) < 80.0:
+            polys = list(groups[0])
+        # bbox area of the walked points projected onto the face plane — a
+        # large value means this face's pointer walk already covered the real
+        # outer outline (even if it failed to close it).
+        walked_bbox_area = 0.0
+        try:
+            wpts = [pt for wp, wc in walked for pt in wp]
+            if len(wpts) >= 3:
+                o_pt, u_pt, v_pt = _plane_basis(wpts)
+                arr_pt = np.asarray(wpts, dtype=float)
+                xp = np.dot(arr_pt - o_pt, u_pt)
+                yp = np.dot(arr_pt - o_pt, v_pt)
+                walked_bbox_area = float(
+                    (xp.max() - xp.min()) * (yp.max() - yp.min()))
+        except Exception:
+            walked_bbox_area = 0.0
         if len(groups) >= 2:
             # Disjoint on-plane islands (shield-can lids): never triangulate
             # them as one outer-with-holes, which fills the PCB between cans.
@@ -1638,10 +1890,30 @@ def _tessellate_face(ents, base, face, end=None) -> list:
             # wrap (or empty).  A finished box lid on the same z keeps its
             # own triangles.
             island_sum = sum(_abs_loop_area(g[0]) for g in groups)
+            max_group_area = max(_abs_loop_area(g[0]) for g in groups)
             wrap_face = (
                 current_max_area > 1.4 * island_sum
                 or (current_max_area < 0.15 * island_sum
                     and ref_area > 1.4 * island_sum)
+                # Main flange whose walk covered the real outline but never
+                # closed it (variant coedge layout): current polygons are tiny
+                # crumbs while the body-plane edges trace the full flange.
+                # Compare against ref_area (THIS face's own coedge extent) so a
+                # correctly-walked small lid next to a much larger sibling lid
+                # is not mistaken for a spanning wrap.
+                or (walked_bbox_area > 50.0
+                    and current_max_area < 0.30 * max(ref_area, max_group_area)
+                    and ref_area > 1.2 * current_max_area)
+                # Walk recovered almost nothing (broken pointer topology), yet
+                # the body-plane edges still separate into several substantial
+                # islands (e.g. the two can lips at z=-3.577): adopt them.
+                # Skip when the walk already closed a real loop — a genuinely
+                # small face (bottom lip strip) must not be widened to the
+                # whole island set.
+                or (current_max_area < 0.05 * island_sum
+                    and max_group_area > 30.0
+                    and len(body_plane_edges) >= 12
+                    and not walk_recovered)
             )
             if wrap_face:
                 extra = []
@@ -1746,6 +2018,89 @@ def _tessellate_face(ents, base, face, end=None) -> list:
     return _triangulate_plane(polys)
 
 
+def _orient_tris_outward(tris) -> None:
+    """Flip triangles in place so every normal points out of the solid.
+
+    Per-face tessellation aligns winding to the ACIS *surface* normal but
+    ignores the face *sense* flag, and some fallback triangulation paths
+    (hull / plane-cluster) bypass that alignment entirely, so individual
+    faces — and even single faces such as the sh_cans:top bottom flange —
+    end up with mixed, partly-inward winding.  Back-face culling then drops
+    those triangles and the solid shows streaky see-through bands.  A
+    connectivity BFS keyed to a positive signed volume is wrong here because
+    the shield can is a hollow, open-bottomed shell whose cavity walls must
+    point *into* the cavity — forcing a single global sign mis-orients them.
+
+    The body is a z-extruded stepped solid, so material occupancy at a point
+    is decided by a vertical ray: count the horizontal boundary triangles
+    directly above it — odd means the point sits inside material, even means
+    void (outside, or inside the open cavity).  Each triangle is tested on
+    BOTH sides of its surface (centroid ± eps·normal); the material side says
+    which way is out.  Operating per-triangle (not per-face) repairs the
+    mixed-winding fallback faces too.  A triangle with void on both sides
+    (the thin bottom lip) is horizontal, so it is pointed away from the
+    vertical mid-plane.  Crossing counts are orientation-independent, so the
+    not-yet-oriented raw triangles are a valid test target.
+    """
+    horiz = []  # (z, xlo, ylo, xhi, yhi, a2, b2, c2) near-horizontal tris
+    zmin = float("inf")
+    zmax = float("-inf")
+    for tri in tris:
+        a = np.asarray(tri[0], dtype=float)
+        b = np.asarray(tri[1], dtype=float)
+        c = np.asarray(tri[2], dtype=float)
+        n = np.cross(b - a, c - a)
+        ln = float(np.linalg.norm(n))
+        if ln < 1e-12:
+            continue
+        zmin = min(zmin, float(a[2]), float(b[2]), float(c[2]))
+        zmax = max(zmax, float(a[2]), float(b[2]), float(c[2]))
+        if abs(n[2]) / ln > 0.7:
+            xs = (float(a[0]), float(b[0]), float(c[0]))
+            ys = (float(a[1]), float(b[1]), float(c[1]))
+            horiz.append(((a[2] + b[2] + c[2]) / 3.0,
+                          min(xs), min(ys), max(xs), max(ys),
+                          (a[0], a[1]), (b[0], b[1]), (c[0], c[1])))
+    if not horiz:
+        return
+    eps = 0.02
+    zmid = 0.5 * (zmin + zmax)
+
+    def in_material(px, py, pz) -> bool:
+        if pz < zmin - 1e-6 or pz > zmax + 1e-6:
+            return False  # above the top / below the bottom -> outside
+        cnt = 0
+        for z, xlo, ylo, xhi, yhi, a2, b2, c2 in horiz:
+            if (z > pz + 1e-9 and xlo - 1e-6 <= px <= xhi + 1e-6
+                    and ylo - 1e-6 <= py <= yhi + 1e-6
+                    and _inside_tri(a2, b2, c2, (px, py))):
+                cnt += 1
+        return cnt % 2 == 1
+
+    for i, tri in enumerate(tris):
+        a = np.asarray(tri[0], dtype=float)
+        b = np.asarray(tri[1], dtype=float)
+        c = np.asarray(tri[2], dtype=float)
+        n = np.cross(b - a, c - a)
+        ln = float(np.linalg.norm(n))
+        if ln < 1e-12:
+            continue
+        nf = n / ln
+        cx = (float(a[0]) + float(b[0]) + float(c[0])) / 3.0 + 0.0011
+        cy = (float(a[1]) + float(b[1]) + float(c[1])) / 3.0 - 0.0013
+        cz = (float(a[2]) + float(b[2]) + float(c[2])) / 3.0
+        plus = in_material(cx + eps * nf[0], cy + eps * nf[1], cz + eps * nf[2])
+        minus = in_material(cx - eps * nf[0], cy - eps * nf[1], cz - eps * nf[2])
+        if plus and not minus:
+            tris[i] = (tri[0], tri[2], tri[1])  # material on +n -> flip
+        elif plus == minus and abs(nf[2]) > 0.7:
+            # horizontal membrane (void/void) or buried (solid/solid) sliver:
+            # point it away from the vertical mid-plane (bottom lip down).
+            want_up = cz > zmid
+            if (nf[2] > 0) != want_up:
+                tris[i] = (tri[0], tri[2], tri[1])
+
+
 def _body_mesh(ents, base, end) -> tuple[list, list]:
     tris = []
     for e in ents[base:end]:
@@ -1753,6 +2108,7 @@ def _body_mesh(ents, base, end) -> tuple[list, list]:
             tris.extend(_tessellate_face(ents, base, e, end))
     if not tris:
         return [], []
+    _orient_tris_outward(tris)
     key_to_i = {}
     points = []
     faces = []
@@ -1764,8 +2120,17 @@ def _body_mesh(ents, base, end) -> tuple[list, list]:
                 key_to_i[key] = len(points)
                 points.append((float(p[0]), float(p[1]), float(p[2])))
             ids.append(key_to_i[key])
-        if len(set(ids)) == 3:
-            faces.append(tuple(ids))
+        if len(set(ids)) != 3:
+            continue
+        # Drop collinear / zero-area slivers (three distinct-but-collinear
+        # vertices) that ear-clipping can leave on a chamfered lip corner;
+        # they render as a hair-thin line in the GUI.
+        a = np.asarray(tri[0], dtype=float)
+        b = np.asarray(tri[1], dtype=float)
+        c = np.asarray(tri[2], dtype=float)
+        if float(np.linalg.norm(np.cross(b - a, c - a))) < 1e-6:
+            continue
+        faces.append(tuple(ids))
     return points, faces
 
 
@@ -1799,6 +2164,20 @@ def _body_wires(ents, base, end, mesh_points=None) -> list:
             b = (round(poly[-1][0], 3), round(poly[-1][1], 3), round(poly[-1][2], 3))
             if a not in mesh_keys and b not in mesh_keys:
                 continue
+            if mesh_points and len(poly) > 2:
+                xs = [p[0] for p in mesh_points]
+                ys = [p[1] for p in mesh_points]
+                zs = [p[2] for p in mesh_points]
+                pad = 2.0
+                lo = (min(xs) - pad, min(ys) - pad, min(zs) - pad)
+                hi = (max(xs) + pad, max(ys) + pad, max(zs) + pad)
+                stray = any(
+                    p[0] < lo[0] or p[0] > hi[0]
+                    or p[1] < lo[1] or p[1] > hi[1]
+                    or p[2] < lo[2] or p[2] > hi[2]
+                    for p in poly[1:-1])
+                if stray:
+                    poly = [poly[0], poly[-1]]
         wires.append(poly)
     return wires
 

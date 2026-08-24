@@ -118,8 +118,45 @@ def test_sh_cans_top_not_spanning():
     top = next(b for b in bodies if b["name"].endswith("sh_cans:top"))
     bot = next(b for b in bodies if b["name"].endswith("sh_cans:bottom"))
     mesh = top["mesh"]
-    # Incomplete fillet loops used to fill this as one grey triangle.
+    # 罐间空隙 (60,-15)/(62,-20) 必须保持为空：变体 coedge 布局曾把多罐
+    # 轮廓焊成一张跨罐的灰色 spanning 面覆盖这里，现在多罐已按簇分离。
+    assert not _mesh_covers(mesh, (60.0, -15.0, -4.275))
+    assert not _mesh_covers(mesh, (62.0, -20.0, -4.275))
+    # 罐 A 底部与罐 B 一样是开口：薄壁屏蔽罩的底面只是墙体底缘围成的环形
+    # 框架（face0 把 can A 作为孔、can B 作为缺口，模型里并不存在 can A 底板
+    # 面），两罐内腔在底层开放。face4 的 wrap fallback 曾误把整个底面（含
+    # can A）填满——既与 face0 共面重叠造成 z-fight 条纹，又错误盖住开口。
     assert not _mesh_covers(mesh, (45.0, -18.0, -4.275))
+    assert not _mesh_covers(mesh, (32.0, -23.0, -4.275))  # 左下凹口保留
+    # 顶盖是一整块连续板（罩住两罐），罐间 (60,-15)/(62,-20) 在顶层被盖住；
+    # 凹口 (32,-23) 在各层都保留。侧墙补齐后实体才有厚度（原先只有悬空薄片）。
+    assert _mesh_covers(mesh, (60.0, -15.0, -3.2775))
+    assert _mesh_covers(mesh, (62.0, -20.0, -3.2775))
+    assert _mesh_covers(mesh, (45.0, -18.0, -3.2775))
+    assert not _mesh_covers(mesh, (32.0, -23.0, -3.2775))
+    # 侧墙：顶盖与底层之间的竖直壁面必须存在（法线水平的三角形）。
+    pts = np.asarray(mesh["points"], dtype=float)
+    has_wall = False
+    for f in mesh["faces"]:
+        a, b_, c = pts[f[0]], pts[f[1]], pts[f[2]]
+        n = np.cross(b_ - a, c - a)
+        ln = float(np.linalg.norm(n))
+        if ln < 1e-12:
+            continue
+        if abs(n[2] / ln) < 0.2:  # 法线近水平 -> 竖直壁面
+            zspan = max(a[2], b_[2], c[2]) - min(a[2], b_[2], c[2])
+            if zspan > 0.5:
+                has_wall = True
+                break
+    assert has_wall, "shield-can side walls missing (solid has no thickness)"
+    # Local-frame nubs glued onto world vertices used to draw a 190 mm
+    # trapezoid at z≈33; CAD wires must stay inside the body AABB.
+    zmin, zmax = top["bounds"][4], top["bounds"][5]
+    for w in (top.get("wires") or []):
+        for p in w:
+            assert zmin - 1.5 <= p[2] <= zmax + 1.5
+            assert top["bounds"][0] - 2.0 <= p[0] <= top["bounds"][1] + 2.0
+            assert top["bounds"][2] - 2.0 <= p[1] <= top["bounds"][3] + 2.0
     # Fillet / nubs samples add CAD wires; a spanning scribble used to
     # emit hundreds. A handful of cans stays well under this cap.
     assert len(top.get("wires") or []) < 150
@@ -129,6 +166,37 @@ def test_sh_cans_top_not_spanning():
     assert len(bot["mesh"]["points"]) == 40
     assert 60 <= len(bot["mesh"]["faces"]) <= 72
     assert len(mesh["faces"]) >= 2
+
+
+def test_sh_cans_top_mesh_outward_consistent():
+    """Closed-solid triangles must be oriented outward consistently, else
+    back-face culling carves streaky see-through holes into the plate (the
+    'torn' look on sh_cans:top).  Interior step faces leave a few non-manifold
+    edges, so require a large consistent majority plus positive volume."""
+    path = os.path.normpath(SAB)
+    if not os.path.exists(path):
+        return
+    bodies = extract_bodies(open(path, "rb").read())
+    top = next(b for b in bodies if b["name"].endswith("sh_cans:top"))
+    mesh = top["mesh"]
+    pts = [np.asarray(p, dtype=float) for p in mesh["points"]]
+    faces = mesh["faces"]
+    edge_dir = {}
+    for f in faces:
+        for k in range(3):
+            a, b = f[k], f[(k + 1) % 3]
+            key = (min(a, b), max(a, b))
+            edge_dir.setdefault(key, []).append(1 if (a, b) == key else -1)
+    shared = [v for v in edge_dir.values() if len(v) == 2]
+    consistent = sum(1 for v in shared if v[0] != v[1])
+    # before the outward-orientation pass roughly half the shared edges were
+    # traversed same-direction; afterwards the visible shell is consistent.
+    assert consistent >= 0.8 * len(shared)
+    vol = 0.0
+    for f in faces:
+        a, b, c = pts[f[0]], pts[f[1]], pts[f[2]]
+        vol += float(np.dot(a, np.cross(b, c)))
+    assert vol > 0.0
 
 
 def test_phone_sab_has_internal_solids():
@@ -209,6 +277,47 @@ def test_opacity_cover_vs_metal():
     assert opacity_for("Phone/Battery:Cell", "Phone/Copper (annealed)") > 0.8
     assert opacity_for("Phone/Housing:ring", "Phone/Plastic") > 0.9
     assert opacity_for("Phone/Fillers and Shields:foam1", "Phone/Vacuum") < 0.1
+
+
+def test_clip_poly_rejects_local_frame_nubs():
+    from sab_bodies import _clip_poly_to_ends
+    a = (53.968, -16.907, -4.275)
+    b = (53.968, -16.907, -3.577)
+    junk = [
+        a,
+        (0.0, 1.0, 33.423),
+        (-8.83, -2.491, 33.423),
+        (0.0, 1.0, 0.0),
+        b,
+    ]
+    out = _clip_poly_to_ends(junk, a, b)
+    assert len(out) == 2
+    assert abs(float(out[0][2]) + 4.275) < 0.01
+    assert abs(float(out[1][2]) + 3.577) < 0.01
+
+
+def test_drop_weld_keeps_tab_splits_bridge():
+    from sab_bodies import _drop_weld_edges, _cluster_edge_groups
+    can_a = [
+        [(0.0, 0.0, 0.0), (20.0, 0.0, 0.0)],
+        [(20.0, 0.0, 0.0), (20.0, 10.0, 0.0)],
+        [(20.0, 10.0, 0.0), (0.0, 10.0, 0.0)],
+        [(0.0, 10.0, 0.0), (0.0, 0.0, 0.0)],
+        [(20.0, 10.0, 0.0), (48.0, 10.0, 0.0)],  # 28 mm tab, far vertex only
+    ]
+    can_b = [
+        [(70.0, 0.0, 0.0), (80.0, 0.0, 0.0)],
+        [(80.0, 0.0, 0.0), (80.0, 10.0, 0.0)],
+        [(80.0, 10.0, 0.0), (70.0, 10.0, 0.0)],
+        [(70.0, 10.0, 0.0), (70.0, 0.0, 0.0)],
+    ]
+    bridge = [[(20.0, 0.0, 0.0), (70.0, 0.0, 0.0)]]
+    kept = _drop_weld_edges(can_a + can_b + bridge)
+    lens = [((e[0][0] - e[-1][0]) ** 2 + (e[0][1] - e[-1][1]) ** 2) ** 0.5
+            for e in kept]
+    assert max(lens) < 35.0  # 50 mm bridge dropped
+    assert any(abs(l - 28.0) < 0.1 for l in lens)  # tab kept
+    assert len(_cluster_edge_groups(kept)) == 2
 
 
 def test_nubs_polyline_skips_surface_net():
