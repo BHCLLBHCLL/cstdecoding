@@ -21,6 +21,9 @@ sab_report.json
 _probe_*.py
 _dump_*.py
 _diag_*.py
+_top_mesh.pkl
+_cmp_*.png
+_top_view*.png
 tests/_scratch/
 
 # OS / IDE
