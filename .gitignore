@@ -19,6 +19,7 @@ phone.cst
 # Local probe / dump artifacts
 sab_report.json
 _probe_*.py
+_aa_probe.py
 _dump_*.py
 _diag_*.py
 _top_mesh.pkl

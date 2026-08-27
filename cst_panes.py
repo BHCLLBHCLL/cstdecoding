@@ -1914,15 +1914,18 @@ class CST3DViewport(QWidget):
         r.GradientBackgroundOn()
         r.TwoSidedLightingOn()
         r.SetAutomaticLightCreation(0)
-        # MSAA first (geometry AA), FXAA second (shader-based AA on top).
-        # MultiSamples must be set before the first render; QVTK widget may
-        # have already rendered once, so ignore failure if GL rejects it.
+        # Geometry AA only: MSAA on the render window.  FXAA is intentionally
+        # OFF — on the desktop GL path (esp. Intel iGPU) FXAA's screen-space
+        # blur makes thin CAD edge lines look jagged/broken and bleeds colour
+        # across the red outline (see _aa_probe.py A/B: zoom_aa_A_fxaa vs
+        # zoom_aa_B_msaa).  Pure multi-sample AA anti-aliases lines and edges
+        # far better and without the FXAA artefacts.
         try:
             self.ren_win.SetMultiSamples(8)
         except Exception:
             pass
         try:
-            r.UseFXAAOn()
+            r.UseFXAAOff()
         except Exception:
             pass
         try:

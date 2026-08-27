@@ -62,6 +62,16 @@ def main():
     n_actors = len(getattr(vp, "_actors", []))
     print("viewport using_vtk:", using_vtk)
     print("viewport actors:", n_actors)
+
+    # --- AA diagnostics: confirm MSAA on / FXAA off on the live GL context ---
+    if using_vtk:
+        rw = vp.ren_win
+        r = vp._renderer
+        try:
+            print("AA state -> MultiSamples:", rw.GetMultiSamples(),
+                  "| UseFXAA:", r.GetUseFXAA())
+        except Exception as e:
+            print("AA state err:", e)
     modes = [m for m, _a, k in getattr(vp, "_actors", [])]
     print("surf actors:", sum(1 for _n, _a, k in getattr(vp, "_actors", []) if k == "surf"))
 
