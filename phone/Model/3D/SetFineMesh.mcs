@@ -1,0 +1,114 @@
+' SetFineMesh
+
+Sub Main ()
+
+	BeginHide
+		' these settings should not be added to History, but only done once when the macro is executed manually
+		StoreParameterWithDescription("edge_ratio", "1+int(max_cell_size/antenna_metal_thickness)", "edge refinement ratio for AntennaMetals mesh group")
+		StoreParameterWithDescription("step_size_ports", "antenna_port_width/11", "cell size applied to AntennaPorts mesh group")
+	EndHide
+
+	'## Merged Block - set mesh properties (Hexahedral TLM)
+	StartVersionStringOverrideMode "2022.0|31.0.1|20210725"
+	With Mesh
+	     .MeshType "HexahedralTLM"
+	     .SetCreator "High Frequency"
+	End With
+	With MeshSettings
+	     .SetMeshType "HexTLM"
+	     .Set "Version", 1%
+	     'MAX CELL - WAVELENGTH REFINEMENT
+	     .Set "StepsPerWaveNear", "15"
+	     .Set "StepsPerWaveFar", "15"
+	     .Set "WavelengthRefinementSameAsNear", "1"
+	     'MAX CELL - GEOMETRY REFINEMENT
+	     .Set "StepsPerBoxNear", "20"
+	     .Set "StepsPerBoxFar", "20"
+	     .Set "MaxStepNear", "0"
+	     .Set "MaxStepFar", "0"
+	     .Set "ModelBoxDescrNear", "maxedge"
+	     .Set "ModelBoxDescrFar", "maxedge"
+	     .Set "UseMaxStepAbsolute", "0"
+	     .Set "GeometryRefinementSameAsNear", "1"
+	     'MIN CELL
+	     .Set "UseRatioLimitGeometry", "1"
+	     .Set "RatioLimitGeometry", "20"
+	     .Set "MinStepGeometryX", "0"
+	     .Set "MinStepGeometryY", "0"
+	     .Set "MinStepGeometryZ", "0"
+	     .Set "UseSameMinStepGeometryXYZ", "1"
+	End With
+	With MeshSettings
+	     .Set "PlaneMergeVersion", "2"
+	End With
+	With MeshSettings
+	     .SetMeshType "HexTLM"
+	     .Set "FaceRefinementOn", "0"
+	     .Set "FaceRefinementPolicy", "2"
+	     .Set "FaceRefinementRatio", "2"
+	     .Set "FaceRefinementStep", "0"
+	     .Set "FaceRefinementNSteps", "2"
+	     .Set "EllipseRefinementOn", "0"
+	     .Set "EllipseRefinementPolicy", "2"
+	     .Set "EllipseRefinementRatio", "2"
+	     .Set "EllipseRefinementStep", "0"
+	     .Set "EllipseRefinementNSteps", "2"
+	     .Set "FaceRefinementBufferLines", "3"
+	     .Set "EdgeRefinementOn", "1"
+	     .Set "EdgeRefinementPolicy", "1"
+	     .Set "EdgeRefinementRatio", "2"
+	     .Set "EdgeRefinementStep", "0"
+	     .Set "EdgeRefinementBufferLines", "3"
+	     .Set "RefineEdgeMaterialGlobal", "0"
+	     .Set "RefineAxialEdgeGlobal", "0"
+	     .Set "BufferLinesNear", "3"
+	     .Set "UseDielectrics", "1"
+	     .Set "EquilibrateOn", "1"
+	     .Set "Equilibrate", "1.5"
+	     .Set "IgnoreThinPanelMaterial", "1"
+	End With
+	With MeshSettings
+	     .SetMeshType "HexTLM"
+	     .Set "SnapToAxialEdges", "1"
+	     .Set "SnapToPlanes", "1"
+	     .Set "SnapToSpheres", "0"
+	     .Set "SnapToEllipses", "1"
+	     .Set "SnapToCylinders", "1"
+	     .Set "SnapToCylinderCenters", "1"
+	     .Set "SnapToEllipseCenters", "1"
+	     .Set "SnapCellCenters", "1"
+	     .Set "SnapProbeCellCenters", "0"
+	End With
+	With MeshSettings
+	     .SetMeshType "HexTLM"
+	     .Set "LimitCellSizeType", "Maxcellsizeneartomodel"
+	     .Set "LimitCellSizeAbsolute", "0"
+	     .Set "UseCellSizeSmoothingRatio", "1"
+	     .Set "CellSizeSmoothingRatio", "4"
+	     .Set "LimitCellConnects", "1"
+	     .Set "PBAMetalAndThin", "1"
+	     .Set "PBADielectrics", "1"
+	     .Set "PBATimeStepReduction", "2"
+	     .Set "UnlumpEdges", "1"
+	End With
+	With Discretizer
+	     .PointAccEnhancement "75"
+	End With
+
+	'## Merged Block - define time domain solver parameters
+	Mesh.SetCreator "High Frequency"
+	With Solver
+	     .Method "Hexahedral TLM"
+	     .SteadyStateLimit "no check"
+	     .StimulationPort "All"
+	     .StimulationMode "All"
+	     .AutoNormImpedance "False"
+	     .NormingImpedance "50"
+	     .StoreTDResultsInCache  "False"
+	     .RunDiscretizerOnly "False"
+	     .SuperimposePLWExcitation "False"
+	     .SParaSymmetry "False"
+	End With
+
+	StopVersionStringOverrideMode
+End Sub

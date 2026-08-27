@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SchematicTopology Version="2.5" Seed="1" Grid="25">
+    <Block Id="1" ForeignId="42781370" Class="MWSSCHEM" ImageIndex="1">
+        <Size Height="675" Width="300"/>
+        <Pins Distribution="TwoSidesDownward">
+            <Pin Index="0" Port="0" BlockPosition="Left">
+                <Label>1(Array1)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="1" Port="1" BlockPosition="Left">
+                <Label>2(Array1)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="2" Port="2" BlockPosition="Left">
+                <Label>3(Array1)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="3" Port="3" BlockPosition="Left">
+                <Label>4(Array1)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="4" Port="4" BlockPosition="Left">
+                <Label>5(Array2)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="5" Port="5" BlockPosition="Left">
+                <Label>6(Array2)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="6" Port="6" BlockPosition="Left">
+                <Label>7(Array2)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="7" Port="7" BlockPosition="Left">
+                <Label>8(Array2)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Right Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="0" Port="8" BlockPosition="Right">
+                <Label>9(Array3-H)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="1" Port="9" BlockPosition="Right">
+                <Label>10(Array3-V)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="2" Port="10" BlockPosition="Right">
+                <Label>11(Array3-H)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="3" Port="11" BlockPosition="Right">
+                <Label>12(Array3-V)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="4" Port="12" BlockPosition="Right">
+                <Label>13(Array3-H)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="5" Port="13" BlockPosition="Right">
+                <Label>14(Array3-V)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="6" Port="14" BlockPosition="Right">
+                <Label>15(Array3-H)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Pin Index="7" Port="15" BlockPosition="Right">
+                <Label>16(Array3-V)<LabelAppearance VerticalMargin="0" RightMargin="0" Color="#000000" LeftMargin="0" Placement="Inside" HorizontalMargin="0" Flags="Left Top">
+                        <Font PointSize="16"/>
+                    </LabelAppearance>
+                </Label>
+            </Pin>
+            <Ports>
+                <Port Name="1" Label="Array1"/>
+                <Port Name="2" Label="Array1"/>
+                <Port Name="3" Label="Array1"/>
+                <Port Name="4" Label="Array1"/>
+                <Port Name="5" Label="Array2"/>
+                <Port Name="6" Label="Array2"/>
+                <Port Name="7" Label="Array2"/>
+                <Port Name="8" Label="Array2"/>
+                <Port Name="9" Label="Array3-H"/>
+                <Port Name="10" Label="Array3-V"/>
+                <Port Name="11" Label="Array3-H"/>
+                <Port Name="12" Label="Array3-V"/>
+                <Port Name="13" Label="Array3-H"/>
+                <Port Name="14" Label="Array3-V"/>
+                <Port Name="15" Label="Array3-H"/>
+                <Port Name="16" Label="Array3-V"/>
+            </Ports>
+        </Pins>
+        <Image IconPosition="TopRight" FileName="../3D/Model.dib" Scale="AutoFit">
+            <Size Height="256" Width="256"/>
+        </Image>
+        <Pos X="50" Y="-287.5"/>
+        <ToolTip>CST MICROWAVE STUDIO schematic block MWSSCHEM1</ToolTip>
+    </Block>
+</SchematicTopology>

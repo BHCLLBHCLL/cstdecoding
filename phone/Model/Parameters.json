@@ -1,0 +1,41 @@
+{
+    "parameters": [
+        {
+            "descr": "antenna element metal thickness",
+            "expr": "0.01",
+            "name": "antenna_metal_thickness",
+            "value": "0.01"
+        },
+        {
+            "descr": "antenna port width",
+            "expr": "0.51",
+            "name": "antenna_port_width",
+            "value": "0.51"
+        },
+        {
+            "descr": "maximum frequency (GHz)",
+            "expr": "30",
+            "name": "max_frequency",
+            "value": "30"
+        },
+        {
+            "descr": "cell size applied to AntennaPorts mesh group",
+            "expr": "antenna_port_width/9",
+            "name": "step_size_ports",
+            "value": "5.66666666666667e-02"
+        },
+        {
+            "descr": "maximum cell size",
+            "expr": "1000*3e8/(max_frequency*1e9*15)",
+            "name": "max_cell_size",
+            "value": "0.666666666666667"
+        },
+        {
+            "descr": "edge refinement ratio for AntennaMetals mesh group",
+            "expr": "32",
+            "name": "edge_ratio",
+            "value": "32"
+        }
+    ],
+    "version": 1
+}

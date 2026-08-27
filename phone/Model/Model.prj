@@ -1,0 +1,13 @@
+{
+   "Author": "DJS3",
+   "Comment": "",
+   "Last Problem Type": "High Frequency",
+   "Last Solver Type": "HF Time Domain",
+   "Last Solver Type Abb": "t-tlm",
+   "Mesh Cells": "26,295,192",
+   "Mesh Type": "Hexahedral TLM",
+   "Modeler Unique ID": "5:cst phone 5g.cst?5aebfc926965c317564674bcd4d2408e?58312:numberofparameters=6:port=1>mode=1>zre=0>zim=0?port=2>mode=1>zre=0>zim=0?port=3>mode=1>zre=0>zim=0?port=4>mode=1>zre=0>zim=0?port=5>mode=1>zre=0>zim=0?port=6>mode=1>zre=0>zim=0?port=7>mode=1>zre=0>zim=0?port=8>mode=1>zre=0>zim=0?port=9>mode=1>zre=0>zim=0?port=10>mode=1>zre=0>zim=0?port=11>mode=1>zre=0>zim=0?port=12>mode=1>zre=0>zim=0?port=13>mode=1>zre=0>zim=0?port=14>mode=1>zre=0>zim=0?port=15>mode=1>zre=0>zim=0?port=16>mode=1>zre=0>zim=0::cstphone2022_1.sab>f1cf6acd5c914f03be3b7ad394305033>2676659:antenna_metal_thickness?antenna_port_width?edge_ratio?max_cell_size?max_frequency?step_size_ports",
+   "ProjectVersion": "'# MWS Version: Version 2024.0 - Aug 01 2023 - ACIS 33.0.1 -",
+   "Results": "TLM Solver",
+   "Version": "3"
+}

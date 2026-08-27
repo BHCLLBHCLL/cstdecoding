@@ -1,0 +1,77 @@
+{
+   "execution": {
+      "classname": "SMAPowerByEmagHPCFrame",
+      "libname": "SMAPowerByEmagUI"
+   },
+   "inputVariables": [
+      {
+         "name": "antenna_metal_thickness",
+         "type": "float",
+         "value": 0.01
+      },
+      {
+         "name": "antenna_port_width",
+         "type": "float",
+         "value": 0.51
+      },
+      {
+         "name": "max_frequency",
+         "type": "float",
+         "value": 30.0
+      },
+      {
+         "name": "edge_ratio",
+         "type": "float",
+         "value": 32.0
+      }
+   ],
+   "outputVariables": [
+      {
+         "len": 1,
+         "name": "3D\\sPD (f=27.5;Z=2.830;d=2.0) [beam-3-1-boreH]",
+         "type": "float",
+         "value": 114.49315429687479
+      },
+      {
+         "len": 1,
+         "name": "3D\\sPD (f=27.5;Z=2.830;d=2.0) [beam-3-5-H-y]",
+         "type": "float",
+         "value": 59.3881591796874
+      },
+      {
+         "len": 1,
+         "name": "3D\\sPD (f=27.5;Z=2.830;d=2.0) [beam-3-6-H+x]",
+         "type": "float",
+         "value": 87.15534179687481
+      },
+      {
+         "len": 1,
+         "name": "3D\\EIRP beam-3-1-boreH",
+         "type": "float",
+         "value": 0.0
+      },
+      {
+         "len": 1,
+         "name": "3D\\EIRP beam-3-5-H-y",
+         "type": "float",
+         "value": 0.0
+      },
+      {
+         "len": 1,
+         "name": "3D\\EIRP beam-3-6-H+x",
+         "type": "float",
+         "value": 0.0
+      },
+      {
+         "len": 1,
+         "name": "3D\\Export 5G Results",
+         "type": "float"
+      },
+      {
+         "len": 1,
+         "name": "3D\\tsp-90-percentile",
+         "type": "float",
+         "value": 19.4249918210112
+      }
+   ]
+}

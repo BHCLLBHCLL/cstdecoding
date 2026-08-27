@@ -1,0 +1,334 @@
+beam-3-1-boreH
+beam-3-2-boreV
+beam-3-3-boreHV
+beam-3-4-HyVx
+beam-3-5-H-y
+beam-3-6-H+x
+beam-3-7-V+y
+beam-3-8-V-x
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-1-boreH
+sPD (f=27.5;X=123.39;d=2.0) beam-3-1-boreH
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-1-boreH
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-1-boreH
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-1-boreH
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-1-boreH
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-2-boreV
+sPD (f=27.5;X=123.39;d=2.0) beam-3-2-boreV
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-2-boreV
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-2-boreV
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-2-boreV
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-2-boreV
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-3-boreHV
+sPD (f=27.5;X=123.39;d=2.0) beam-3-3-boreHV
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-3-boreHV
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-3-boreHV
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-3-boreHV
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-3-boreHV
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-4-HyVx
+sPD (f=27.5;X=123.39;d=2.0) beam-3-4-HyVx
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-4-HyVx
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-4-HyVx
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-4-HyVx
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-4-HyVx
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-5-H-y
+sPD (f=27.5;X=123.39;d=2.0) beam-3-5-H-y
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-5-H-y
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-5-H-y
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-5-H-y
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-5-H-y
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-6-H+x
+sPD (f=27.5;X=123.39;d=2.0) beam-3-6-H+x
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-6-H+x
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-6-H+x
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-6-H+x
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-6-H+x
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-7-V+y
+sPD (f=27.5;X=123.39;d=2.0) beam-3-7-V+y
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-7-V+y
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-7-V+y
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-7-V+y
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-7-V+y
+sPD (f=27.5;X=-16.62;d=2.0) beam-3-8-V-x
+sPD (f=27.5;X=123.39;d=2.0) beam-3-8-V-x
+sPD (f=27.5;Y=-37.00;d=2.0) beam-3-8-V-x
+sPD (f=27.5;Y=37.00;d=2.0) beam-3-8-V-x
+sPD (f=27.5;Z=-10.65;d=2.0) beam-3-8-V-x
+sPD (f=27.5;Z=2.83;d=2.0) beam-3-8-V-x
+EIRP beam-3-1-boreH
+EIRP beam-3-2-boreV
+EIRP beam-3-3-boreHV
+EIRP beam-3-4-HyVx
+EIRP beam-3-5-H-y
+EIRP beam-3-6-H+x
+EIRP beam-3-7-V+y
+EIRP beam-3-8-V-x
+CDF beam-3-1-boreH dBm
+CDF beam-3-2-boreV dBm
+CDF beam-3-3-boreHV dBm
+CDF beam-3-4-HyVx dBm
+CDF beam-3-5-H-y dBm
+CDF beam-3-6-H+x dBm
+CDF beam-3-7-V+y dBm
+CDF beam-3-8-V-x dBm
+CDF tsp-all f=27.5 EIRP dBm
+beam-1-1
+beam-1-2
+beam-2-1
+beam-2-2
+sPD (f=28.35;X=-16.62;d=2.0) beam-1-1
+sPD (f=28.35;X=123.39;d=2.0) beam-1-1
+sPD (f=28.35;Y=-37.00;d=2.0) beam-1-1
+sPD (f=28.35;Y=37.00;d=2.0) beam-1-1
+sPD (f=28.35;Z=-10.65;d=2.0) beam-1-1
+sPD (f=28.35;Z=2.83;d=2.0) beam-1-1
+sPD (f=28.35;X=-16.62;d=2.0) beam-1-2
+sPD (f=28.35;X=123.39;d=2.0) beam-1-2
+sPD (f=28.35;Y=-37.00;d=2.0) beam-1-2
+sPD (f=28.35;Y=37.00;d=2.0) beam-1-2
+sPD (f=28.35;Z=-10.65;d=2.0) beam-1-2
+sPD (f=28.35;Z=2.83;d=2.0) beam-1-2
+sPD (f=28.35;X=-16.62;d=2.0) beam-2-1
+sPD (f=28.35;X=123.39;d=2.0) beam-2-1
+sPD (f=28.35;Y=-37.00;d=2.0) beam-2-1
+sPD (f=28.35;Y=37.00;d=2.0) beam-2-1
+sPD (f=28.35;Z=-10.65;d=2.0) beam-2-1
+sPD (f=28.35;Z=2.83;d=2.0) beam-2-1
+sPD (f=28.35;X=-16.62;d=2.0) beam-2-2
+sPD (f=28.35;X=123.39;d=2.0) beam-2-2
+sPD (f=28.35;Y=-37.00;d=2.0) beam-2-2
+sPD (f=28.35;Y=37.00;d=2.0) beam-2-2
+sPD (f=28.35;Z=-10.65;d=2.0) beam-2-2
+sPD (f=28.35;Z=2.83;d=2.0) beam-2-2
+EIRP beam-1-1
+EIRP beam-1-2
+EIRP beam-2-1
+EIRP beam-2-2
+CDF beam-1-1 dBm
+CDF beam-1-2 dBm
+CDF beam-2-1 dBm
+CDF beam-2-2 dBm
+CDF tsp-1 f=28.35 EIRP dBm
+CDF tsp-2 f=28.35 EIRP dBm
+CDF tsp-all f=28.35 EIRP dBm
+Export 5G Results
+beam-3-1-boreH
+beam-3-2-boreV
+beam-3-3-boreHV
+beam-3-4-HyVx
+beam-3-5-H-y
+beam-3-6-H+x
+beam-3-7-V+y
+beam-3-8-V-x
+sPD (f=27.5;Z=2.830) [beam-3-1-boreH]
+sPD (f=27.5;Z=2.830) [beam-3-2-boreV]
+sPD (f=27.5;Z=2.830) [beam-3-3-boreHV]
+sPD (f=27.5;Z=2.830) [beam-3-4-HyVx]
+sPD (f=27.5;Z=2.830) [beam-3-5-H-y]
+sPD (f=27.5;Z=2.830) [beam-3-6-H+x]
+sPD (f=27.5;Z=2.830) [beam-3-7-V+y]
+sPD (f=27.5;Z=2.830) [beam-3-8-V-x]
+EIRP beam-3-1-boreH
+EIRP beam-3-2-boreV
+EIRP beam-3-3-boreHV
+EIRP beam-3-4-HyVx
+EIRP beam-3-5-H-y
+EIRP beam-3-6-H+x
+EIRP beam-3-7-V+y
+EIRP beam-3-8-V-x
+CDF beam-3-1-boreH dBm
+CDF beam-3-2-boreV dBm
+CDF beam-3-3-boreHV dBm
+CDF beam-3-4-HyVx dBm
+CDF beam-3-5-H-y dBm
+CDF beam-3-6-H+x dBm
+CDF beam-3-7-V+y dBm
+CDF beam-3-8-V-x dBm
+CDF tsp-all f=27.5 (EIRP dBm)
+beam-1-1
+beam-1-2
+beam-2-1
+beam-2-2
+sPD (f=28.35;Z=2.830) [beam-1-1]
+sPD (f=28.35;Z=2.830) [beam-1-2]
+sPD (f=28.35;Z=2.830) [beam-2-1]
+sPD (f=28.35;Z=2.830) [beam-2-2]
+EIRP beam-1-1
+EIRP beam-1-2
+EIRP beam-2-1
+EIRP beam-2-2
+CDF beam-1-1 dBm
+CDF beam-1-2 dBm
+CDF beam-2-1 dBm
+CDF beam-2-2 dBm
+CDF tsp-1 f=28.35 (EIRP dBm)
+CDF tsp-2 f=28.35 (EIRP dBm)
+CDF tsp-all f=28.35 (EIRP dBm)
+Export 5G Results
+beam-3-1-boreH
+beam-3-2-boreV
+beam-3-3-boreHV
+beam-3-4-HyVx
+beam-3-5-H-y
+beam-3-6-H+x
+beam-3-7-V+y
+beam-3-8-V-x
+EIRP beam-3-1-boreH
+EIRP beam-3-2-boreV
+EIRP beam-3-3-boreHV
+EIRP beam-3-4-HyVx
+EIRP beam-3-5-H-y
+EIRP beam-3-6-H+x
+EIRP beam-3-7-V+y
+EIRP beam-3-8-V-x
+CDF beam-3-1-boreH dBm
+CDF beam-3-2-boreV dBm
+CDF beam-3-3-boreHV dBm
+CDF beam-3-4-HyVx dBm
+CDF beam-3-5-H-y dBm
+CDF beam-3-6-H+x dBm
+CDF beam-3-7-V+y dBm
+CDF beam-3-8-V-x dBm
+CDF tsp-all f=27.5 (EIRP dBm)
+beam-1-1
+beam-1-2
+beam-2-1
+beam-2-2
+EIRP beam-1-1
+EIRP beam-1-2
+EIRP beam-2-1
+EIRP beam-2-2
+CDF beam-1-1 dBm
+CDF beam-1-2 dBm
+CDF beam-2-1 dBm
+CDF beam-2-2 dBm
+CDF tsp-1 f=28.35 (EIRP dBm)
+CDF tsp-2 f=28.35 (EIRP dBm)
+CDF tsp-all f=28.35 (EIRP dBm)
+Export 5G Results
+beam-3-1-boreH
+beam-3-2-boreV
+beam-3-3-boreHV
+beam-3-4-HyVx
+beam-3-5-H-y
+beam-3-6-H+x
+beam-3-7-V+y
+beam-3-8-V-x
+sPD (f=27.5;Z=2.83) [beam-3-1-boreH]
+sPD (f=27.5;Z=2.83) [beam-3-2-boreV]
+sPD (f=27.5;Z=2.83) [beam-3-3-boreHV]
+sPD (f=27.5;Z=2.83) [beam-3-4-HyVx]
+sPD (f=27.5;Z=2.83) [beam-3-5-H-y]
+sPD (f=27.5;Z=2.83) [beam-3-6-H+x]
+sPD (f=27.5;Z=2.83) [beam-3-7-V+y]
+sPD (f=27.5;Z=2.83) [beam-3-8-V-x]
+EIRP beam-3-1-boreH
+EIRP beam-3-2-boreV
+EIRP beam-3-3-boreHV
+EIRP beam-3-4-HyVx
+EIRP beam-3-5-H-y
+EIRP beam-3-6-H+x
+EIRP beam-3-7-V+y
+EIRP beam-3-8-V-x
+CDF beam-3-1-boreH dBm
+CDF beam-3-2-boreV dBm
+CDF beam-3-3-boreHV dBm
+CDF beam-3-4-HyVx dBm
+CDF beam-3-5-H-y dBm
+CDF beam-3-6-H+x dBm
+CDF beam-3-7-V+y dBm
+CDF beam-3-8-V-x dBm
+CDF tsp-all f=27.5 (EIRP dBm)
+beam-1-1
+beam-1-2
+beam-2-1
+beam-2-2
+sPD (f=28.35;Z=2.83) [beam-1-1]
+sPD (f=28.35;Z=2.83) [beam-1-2]
+sPD (f=28.35;Z=2.83) [beam-2-1]
+sPD (f=28.35;Z=2.83) [beam-2-2]
+EIRP beam-1-1
+EIRP beam-1-2
+EIRP beam-2-1
+EIRP beam-2-2
+CDF beam-1-1 dBm
+CDF beam-1-2 dBm
+CDF beam-2-1 dBm
+CDF beam-2-2 dBm
+CDF tsp-1 f=28.35 (EIRP dBm)
+CDF tsp-2 f=28.35 (EIRP dBm)
+CDF tsp-all f=28.35 (EIRP dBm)
+Export 5G Results
+beam-3-1-boreH
+beam-3-2-boreV
+beam-3-3-boreHV
+beam-3-4-HyVx
+beam-3-5-H-y
+beam-3-6-H+x
+beam-3-7-V+y
+beam-3-8-V-x
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-1-boreH]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-1-boreH]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-1-boreH]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-1-boreH]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-1-boreH]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-1-boreH]
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-2-boreV]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-2-boreV]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-2-boreV]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-2-boreV]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-2-boreV]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-2-boreV]
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-3-boreHV]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-3-boreHV]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-3-boreHV]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-3-boreHV]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-3-boreHV]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-3-boreHV]
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-4-HyVx]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-4-HyVx]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-4-HyVx]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-4-HyVx]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-4-HyVx]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-4-HyVx]
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-5-H-y]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-5-H-y]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-5-H-y]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-5-H-y]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-5-H-y]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-5-H-y]
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-6-H+x]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-6-H+x]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-6-H+x]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-6-H+x]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-6-H+x]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-6-H+x]
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-7-V+y]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-7-V+y]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-7-V+y]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-7-V+y]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-7-V+y]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-7-V+y]
+sPD (f=27.5;X=-16.615;d=2.0) [beam-3-8-V-x]
+sPD (f=27.5;X=123.385;d=2.0) [beam-3-8-V-x]
+sPD (f=27.5;Y=-37.000;d=2.0) [beam-3-8-V-x]
+sPD (f=27.5;Y=37.000;d=2.0) [beam-3-8-V-x]
+sPD (f=27.5;Z=-10.650;d=2.0) [beam-3-8-V-x]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-8-V-x]
+EIRP beam-3-1-boreH
+EIRP beam-3-2-boreV
+EIRP beam-3-3-boreHV
+EIRP beam-3-4-HyVx
+EIRP beam-3-5-H-y
+EIRP beam-3-6-H+x
+EIRP beam-3-7-V+y
+EIRP beam-3-8-V-x
+CDF beam-3-1-boreH dBm
+CDF beam-3-2-boreV dBm
+CDF beam-3-3-boreHV dBm
+CDF beam-3-4-HyVx dBm
+CDF beam-3-5-H-y dBm
+CDF beam-3-6-H+x dBm
+CDF beam-3-7-V+y dBm
+CDF beam-3-8-V-x dBm
+CDF tsp-all f=27.5 (EIRP dBm)
+Export 5G Results

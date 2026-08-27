@@ -1,0 +1,169 @@
+11
+0
+0
+15
+beam-3-1-boreH
+- Combine Results
+1
+1D
+2D and 3D Field Results
+P
+ED10
+- Combine Results^+MWS.rtp
+VBA
+1
+beam-3-1-boreH
+beam-3-5-H-y
+- Combine Results
+1
+1D
+2D and 3D Field Results
+P
+ED10
+- Combine Results^+MWS.rtp
+VBA
+1
+beam-3-5-H-y
+beam-3-6-H+x
+- Combine Results
+1
+1D
+2D and 3D Field Results
+P
+ED10
+- Combine Results^+MWS.rtp
+VBA
+1
+beam-3-6-H+x
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-1-boreH]
+Calculate Field Exposure
+1
+0D
+2D and 3D Field Results
+P
+ED10
+Calculate Field Exposure.rtp
+VBA
+1
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-1-boreH]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-5-H-y]
+Calculate Field Exposure
+1
+0D
+2D and 3D Field Results
+P
+ED10
+Calculate Field Exposure.rtp
+VBA
+1
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-5-H-y]
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-6-H+x]
+Calculate Field Exposure
+1
+0D
+2D and 3D Field Results
+P
+ED10
+Calculate Field Exposure.rtp
+VBA
+1
+sPD (f=27.5;Z=2.830;d=2.0) [beam-3-6-H+x]
+EIRP beam-3-1-boreH
+- Mix Farfield Results
+1
+0D
+Farfield and Antenna Properties
+P
+ED10
+- Mix Farfield Results^+MWS+DS.rtp
+VBA
+1
+EIRP beam-3-1-boreH
+EIRP beam-3-5-H-y
+- Mix Farfield Results
+1
+0D
+Farfield and Antenna Properties
+P
+ED10
+- Mix Farfield Results^+MWS+DS.rtp
+VBA
+1
+EIRP beam-3-5-H-y
+EIRP beam-3-6-H+x
+- Mix Farfield Results
+1
+0D
+Farfield and Antenna Properties
+P
+ED10
+- Mix Farfield Results^+MWS+DS.rtp
+VBA
+1
+EIRP beam-3-6-H+x
+CDF beam-3-1-boreH dBm
+Farfield Result
+1
+1D
+Farfield and Antenna Properties
+P
+ED10
+Farfield Result^+MWS+DS.rtp
+VBA
+1
+CDF beam-3-1-boreH dBm
+CDF beam-3-5-H-y dBm
+Farfield Result
+1
+1D
+Farfield and Antenna Properties
+P
+ED10
+Farfield Result^+MWS+DS.rtp
+VBA
+1
+CDF beam-3-5-H-y dBm
+CDF beam-3-6-H+x dBm
+Farfield Result
+1
+1D
+Farfield and Antenna Properties
+P
+ED10
+Farfield Result^+MWS+DS.rtp
+VBA
+1
+CDF beam-3-6-H+x dBm
+CDF tsp-all f=27.5 (EIRP dBm)
+Total Scan Pattern
+1
+1D
+Farfield and Antenna Properties
+P
+ED10
+Total Scan Pattern^+MWS+DS.rtp
+VBA
+1
+CDF tsp-all f=27.5 (EIRP dBm)
+Export 5G Results
+Export 5G Results
+1
+0D
+Misc
+P
+ED10
+Export 5G Results^+MWS.rtp
+VBA
+0
+tsp-90-percentile
+0D or 1D Result from 1D Result (Rescale, Derivation, etc)
+1
+0D
+General 1D
+P
+EP11
+0D or 1D Result from 1D Result (Rescale, Derivation, etc).rtp
+VBA
+1
+tsp-90-percentile
+0
