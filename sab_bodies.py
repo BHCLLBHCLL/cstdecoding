@@ -1281,6 +1281,123 @@ def _reject_outside(tris, origin, u, v, outer2) -> list:
     return kept
 
 
+def _seg_proper_cross(p1, p2, p3, p4) -> bool:
+    """True if segment p1p2 properly crosses segment p3p4 (no shared endpoint)."""
+    d1 = _cross2(p3, p4, p1)
+    d2 = _cross2(p3, p4, p2)
+    d3 = _cross2(p1, p2, p3)
+    d4 = _cross2(p1, p2, p4)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _bridge_vertex(poly2, M, hole2):
+    """Outer-polygon vertex visible from the hole vertex M, nearest first.
+
+    The bridge segment M->V must not cross any outer edge or any edge of the
+    hole being merged, otherwise the merged ring self-intersects and
+    ear-clipping collapses (half the rim area vanished before this check).
+    Among visible candidates we take the nearest to M, which keeps the bridge
+    a short channel straight across the rim strip.
+    """
+    n = len(poly2)
+    nh = len(hole2)
+    best = None
+    best_d = math.inf
+    for j in range(n):
+        V = poly2[j]
+        if _same2(V, M):
+            continue
+        clear = True
+        for i in range(n):
+            if i == j or (i + 1) % n == j:
+                continue
+            a = poly2[i]
+            b = poly2[(i + 1) % n]
+            if _same2(a, M) or _same2(b, M):
+                continue
+            if _seg_proper_cross(M, V, a, b):
+                clear = False
+                break
+        if clear:
+            for i in range(nh):
+                a = hole2[i]
+                b = hole2[(i + 1) % nh]
+                if _same2(a, M) or _same2(b, M):
+                    continue
+                if _seg_proper_cross(M, V, a, b):
+                    clear = False
+                    break
+        if not clear:
+            continue
+        d2 = (V[0] - M[0]) ** 2 + (V[1] - M[1]) ** 2
+        if d2 < best_d:
+            best_d = d2
+            best = j
+    return best
+
+
+def _bridge_holes_into_outer(outer, holes):
+    """Merge every hole loop into the outer loop as one simple 3-D polygon.
+
+    Unconstrained Delaunay triangulates the convex hull of outer+hole vertices,
+    so across a concave outer notch it builds spanning triangles whose centroid
+    falls outside the face; the region test then drops them and the thin rim
+    strip between an outer wall and a hole is left empty (the sh_cans:top
+    bottom-frame gaps).  Bridging each hole into the outer ring (a zero-width
+    channel that duplicates the two bridge endpoints) yields a single simple
+    polygon whose boundary edges are all real face edges, so ear-clipping
+    fills the rim and keeps the hole open.
+    """
+    if not holes:
+        return list(outer)
+    origin, u, v = _plane_basis(outer)
+    poly2 = _project_poly(outer, origin, u, v)
+    poly3 = list(outer)
+    todo = []
+    for h in holes:
+        h2 = _project_poly(h, origin, u, v)
+        if len(h2) >= 3:
+            todo.append((h2, list(h)))
+    # rightmost-hole-first so a bridge never crosses a not-yet-merged hole
+    todo.sort(key=lambda hh: -max(p[0] for p in hh[0]))
+    for h2, h3 in todo:
+        mi = max(range(len(h2)), key=lambda i: (h2[i][0], -h2[i][1]))
+        h2 = h2[mi:] + h2[:mi]
+        h3 = h3[mi:] + h3[:mi]
+        bi = _bridge_vertex(poly2, h2[0], h2)
+        if bi is None:
+            continue
+        poly2 = poly2[:bi + 1] + h2 + [h2[0]] + [poly2[bi]] + poly2[bi + 1:]
+        poly3 = poly3[:bi + 1] + h3 + [h3[0]] + [poly3[bi]] + poly3[bi + 1:]
+    return poly3
+
+
+def _tris_area2(tris, origin, u, v) -> float:
+    total = 0.0
+    for tri in tris:
+        p2 = _project_poly(tri, origin, u, v)
+        total += abs(_cross2(p2[0], p2[1], p2[2])) * 0.5
+    return total
+
+
+def _tris_keep_holes_open(tris, origin, u, v, hole2d) -> bool:
+    """True if no triangle centroid falls strictly inside a hole.
+
+    Guards the bridged ear-clip result: a hole that failed to bridge is not
+    part of the merged ring, so ear-clipping would fill it.  The area ratio
+    alone can't tell that apart (filling a hole still beats the coverage
+    threshold), so reject any result that leaks triangles into a hole.
+    """
+    for tri in tris:
+        p2 = _project_poly(tri, origin, u, v)
+        cent = ((p2[0][0] + p2[1][0] + p2[2][0]) / 3.0,
+                (p2[0][1] + p2[1][1] + p2[2][1]) / 3.0)
+        for h in hole2d:
+            if len(h) >= 3 and _point_in_poly2(cent, h) and not _on_poly_edge(cent, h):
+                return False
+    return True
+
+
 def _triangulate_plane(polys: list) -> list:
     usable = [_strip_spikes(_dedup_poly(p)) for p in polys if len(p) >= 3]
     usable = [p for p in usable if len(p) >= 3]
@@ -1326,6 +1443,22 @@ def _triangulate_plane(polys: list) -> list:
         tris = _earclip(outer)
         if len(tris) >= max(1, n - 2):
             return tris
+
+    # Holed face: bridge each hole into the outer ring and ear-clip the single
+    # resulting simple polygon.  This keeps every real face edge as a triangle
+    # edge, so thin rim strips between an outer wall and a hole are filled
+    # instead of being dropped (unconstrained Delaunay spans the concave outer
+    # notches and its spanning triangles fail the region test, leaving gaps).
+    if holes:
+        bridged = _bridge_holes_into_outer(outer, holes)
+        tris = _earclip(bridged)
+        if tris and _tris_keep_holes_open(tris, origin, u, v, hole2d):
+            # _poly_area2 is the shoelace sum (2x area); _tris_area2 is true
+            # area, so halve the reference before comparing coverage.
+            want = (abs(_poly_area2(outer2)) - sum(abs(_poly_area2(h))
+                                                   for h in hole2d)) * 0.5
+            if want > 0 and _tris_area2(tris, origin, u, v) >= 0.9 * want:
+                return tris
 
     pts3 = list(outer)
     for h in holes:
