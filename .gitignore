@@ -24,6 +24,7 @@ _diag_*.py
 _top_mesh.pkl
 _cmp_*.png
 _top_view*.png
+_regress_out/
 tests/_scratch/
 
 # OS / IDE

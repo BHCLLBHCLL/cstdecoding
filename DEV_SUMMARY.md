@@ -170,3 +170,47 @@ face 的 *sense* 标志，且 hull/plane-cluster 等回退路径完全绕过了�
    否则回退到旧路径，保证改动严格不劣化。
 5. **网格地面真值 > 面积启发式**：对边界/覆盖类问题，用网格点采样做"真实区域 vs
    实际覆盖"对比，比单看面积数字更可靠。
+
+---
+
+## 7. 真实工程 3D 交互回归（桌面 GL 环境）
+
+`tests/test_cst_gui.py` 强制 `QT_QPA_PLATFORM=offscreen` 且 `enable_3d=False`，走的是
+Qt canvas 回退路径，**无法验证真实 VTK/桌面 GL 渲染**。为此建立
+`_regress_3d.py`，在真实桌面 OpenGL 环境下加载真实工程做交互回归。
+
+### 7.1 关键坑：.cst 是 "DE-ZIP" 变体
+
+回归用 `phone/`（解压的 CST 工程树）作为真实工程，需先打包回 `.cst` 容器。最初用
+`zipfile` 打包失败——`cst_parser` 期望的是 **CST 私有 DE-ZIP 变体**，与标准 ZIP 有
+三处差异（`cst_parser.py`）：
+
+- 本地文件头签名 `DE\x03\x04`（标准 ZIP 为 `PK\x03\x04`）；
+- 中央目录条目签名 `DE\x01\x02`（标准为 `PK\x01\x02`）；
+- 本地头（34 B）与中央目录头（50 B）在 DOS date 字段后**各多一个 4 字节 `x` 字段**；
+- 仅 EOCD 保持标准 `PK\x05\x06`。
+
+因此回归改用项目自带的 `cst_parser.write_cst()` 打包，它按上述布局写出正确容器，
+`open_cst()` 回读 67 条目全部 CRC 通过。
+
+### 7.2 回归内容与结果
+
+脚本流程：打包 → 真实 `QApplication`（不设 offscreen）→ `CSTMainWindow(cst,
+enable_3d=True)` 显示窗口 → 等工程加载 → 依次执行相机交互与绘制模式切换并截图。
+
+| 检查项 | 结果 |
+|--------|------|
+| `_using_vtk`（真实 VTK 而非 canvas 回退） | ✅ True |
+| 加载 ACIS 组件数 | ✅ 113 个（`sh_cans:top` 等） |
+| 3D 视口 actor 数 | ✅ 339（113 surf + 边线/线框） |
+| 相机 orbit / zoom | ✅ |
+| Shading / Wireframe / Mesh / Transparent / BoundingBox 五种绘制模式 | ✅ 全部 |
+| CAD 边线显示开关 | ✅ |
+| `fit()` 视角复位 | ✅ |
+
+截图存于 `_regress_out/`。在真实 GL 路径下验证了此前抗锯齿/边缘增强的效果：8x MSAA
++ FXAA + `SetLineSmoothing` + 加宽线宽均生效——SMD 元件斜边、绿色基板边缘、弧形铜箔
+走线平滑无毛刺，Wireframe 模式的网格短线连贯清晰。
+
+**结论**：真实工程 + 真实桌面 GL 环境下的 3D 交互回归 **全部通过**，抗锯齿与边缘短线
+渲染质量达到预期，与 CST Studio 显示一致。
