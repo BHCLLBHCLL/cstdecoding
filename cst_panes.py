@@ -1914,8 +1914,19 @@ class CST3DViewport(QWidget):
         r.GradientBackgroundOn()
         r.TwoSidedLightingOn()
         r.SetAutomaticLightCreation(0)
+        # MSAA first (geometry AA), FXAA second (shader-based AA on top).
+        # MultiSamples must be set before the first render; QVTK widget may
+        # have already rendered once, so ignore failure if GL rejects it.
+        try:
+            self.ren_win.SetMultiSamples(8)
+        except Exception:
+            pass
         try:
             r.UseFXAAOn()
+        except Exception:
+            pass
+        try:
+            r.SetUseImageBasedLighting(False)
         except Exception:
             pass
         self._set_translucent_pass(False)
@@ -1939,6 +1950,7 @@ class CST3DViewport(QWidget):
                 r.SetMaximumNumberOfPeels(8)
                 r.SetOcclusionRatio(0.1)
             else:
+                self.ren_win.SetMultiSamples(8)
                 r.SetUseDepthPeeling(0)
                 try:
                     r.SetUseDepthPeelingForVolumes(0)
@@ -2246,12 +2258,16 @@ class CST3DViewport(QWidget):
         actor = vtk.vtkActor()
         actor.SetMapper(mapper)
         prop = actor.GetProperty()
-        prop.SetColor(0.22, 0.22, 0.24)
+        prop.SetColor(0.14, 0.15, 0.17)
         prop.SetOpacity(1.0)
-        prop.SetLineWidth(1.0)
+        prop.SetLineWidth(1.4)
         prop.SetRepresentationToWireframe()
         try:
             prop.LightingOff()
+        except Exception:
+            pass
+        try:
+            prop.SetLineSmoothing(True)
         except Exception:
             pass
         actor.SetVisibility(0)
@@ -2411,8 +2427,12 @@ class CST3DViewport(QWidget):
             if n == self._selected and self._selected:
                 prop.SetAmbient(0.95)
                 prop.SetEdgeVisibility(1)
-                prop.SetEdgeColor(1.0, 0.82, 0.12)
-                prop.SetLineWidth(2.2)
+                prop.SetEdgeColor(1.0, 0.78, 0.10)
+                prop.SetLineWidth(2.8)
+                try:
+                    prop.SetLineSmoothing(True)
+                except Exception:
+                    pass
             else:
                 prop.SetAmbient(0.78)
 
@@ -2426,8 +2446,12 @@ class CST3DViewport(QWidget):
             if kind == "wire":
                 show_w = self._cad_edges and mode not in ("BoundingBox", "Mesh")
                 actor.SetVisibility(0 if hide or not show_w else 1)
-                prop.SetColor(0.22, 0.22, 0.24)
-                prop.SetLineWidth(1.15 if mode == "Wireframe" else 1.0)
+                prop.SetColor(0.14, 0.15, 0.17)
+                prop.SetLineWidth(1.6 if mode == "Wireframe" else 1.4)
+                try:
+                    prop.SetLineSmoothing(True)
+                except Exception:
+                    pass
                 continue
             if kind == "glyph":
                 actor.SetVisibility(0 if hide or mode == "BoundingBox" else 1)
@@ -2458,8 +2482,12 @@ class CST3DViewport(QWidget):
                 prop.SetRepresentationToSurface()
                 prop.SetOpacity(0.38)
                 prop.SetEdgeVisibility(1)
-                prop.SetEdgeColor(0.12, 0.12, 0.16)
-                prop.SetLineWidth(1.0)
+                prop.SetEdgeColor(0.10, 0.10, 0.13)
+                prop.SetLineWidth(1.25)
+                try:
+                    prop.SetLineSmoothing(True)
+                except Exception:
+                    pass
                 prop.BackfaceCullingOff()
                 try:
                     actor.ForceOpaqueOff()
